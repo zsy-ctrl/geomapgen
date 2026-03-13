@@ -1,0 +1,56 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Geo LoRA Train",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "unimapgen.train_geo_lora",
+      "cwd": "c:\\DevelopProject\\VScode\\geomapgen",
+      "args": [
+        "--config",
+        "configs/geo_vector_lora.yaml"
+      ],
+      "console": "integratedTerminal",
+      "justMyCode": false
+    },
+    {
+      "name": "Geo Predict",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "unimapgen.predict_geo_vector",
+      "cwd": "c:\\DevelopProject\\VScode\\geomapgen",
+      "args": [
+        "--config",
+        "configs/geo_vector_lora.yaml",
+        "--checkpoint",
+        "outputs/geo_vector_lora/latest.pt",
+        "--split",
+        "val",
+        "--output_dir",
+        "outputs/debug_predict"
+      ],
+      "console": "integratedTerminal",
+      "justMyCode": false
+    },
+    {
+      "name": "Geo Eval",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "unimapgen.eval_geo_vector",
+      "cwd": "c:\\DevelopProject\\VScode\\geomapgen",
+      "args": [
+        "--config",
+        "configs/geo_vector_lora.yaml",
+        "--checkpoint",
+        "outputs/geo_vector_lora/latest.pt",
+        "--split",
+        "val",
+        "--output",
+        "outputs/geo_eval_metrics.debug.json"
+      ],
+      "console": "integratedTerminal",
+      "justMyCode": false
+    }
+  ]
+}

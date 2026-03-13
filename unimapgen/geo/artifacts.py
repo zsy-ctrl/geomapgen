@@ -177,8 +177,9 @@ def export_batch_geojson_snapshots(
     save_inputs = bool(artifact_cfg["save_train_batch_inputs"]) if stage == "train" else bool(artifact_cfg["save_val_batch_inputs"])
     save_predictions = bool(artifact_cfg["save_train_batch_predictions"]) if stage == "train" else bool(artifact_cfg["save_val_batch_predictions"])
 
-    max_samples = max(0, int(artifact_cfg["max_samples_per_batch"]))
-    if max_samples == 0:
+    max_samples_cfg = int(artifact_cfg["max_samples_per_batch"])
+    max_samples = len(batch.get("sample_ids", [])) if max_samples_cfg <= 0 else min(int(max_samples_cfg), len(batch.get("sample_ids", [])))
+    if max_samples <= 0:
         return []
 
     stage_out_dir = os.path.join(output_dir, "artifacts", stage, f"epoch_{int(epoch):04d}", f"batch_{int(batch_index):05d}")
@@ -219,6 +220,10 @@ def export_batch_geojson_snapshots(
                 )
                 save_text(os.path.join(sample_out_dir, "prompt.txt"), str(batch["prompt_texts"][sample_index]))
                 save_text(os.path.join(sample_out_dir, "state.txt"), str(batch.get("state_texts", [""])[sample_index]))
+                save_text(
+                    os.path.join(sample_out_dir, f"{task_schema.collection_name}cut.txt"),
+                    str(batch.get("state_texts", [""])[sample_index]),
+                )
                 save_text(os.path.join(sample_out_dir, "target.txt"), str(batch.get("target_texts", [""])[sample_index]))
                 save_text(
                     os.path.join(sample_out_dir, "target_meta.txt"),
@@ -237,6 +242,18 @@ def export_batch_geojson_snapshots(
                     path=os.path.join(sample_out_dir, f"{task_schema.collection_name}.gt.geojson"),
                     task_schema=task_schema,
                     feature_records=gt_features_abs,
+                    raster_meta=raster_meta,
+                )
+                state_feature_records_list = batch.get("state_feature_records_list", [])
+                cut_features_abs = (
+                    state_feature_records_list[sample_index]
+                    if sample_index < len(state_feature_records_list)
+                    else []
+                )
+                save_geojson_snapshot(
+                    path=os.path.join(sample_out_dir, f"{task_schema.collection_name}cut.pred.geojson"),
+                    task_schema=task_schema,
+                    feature_records=cut_features_abs,
                     raster_meta=raster_meta,
                 )
 

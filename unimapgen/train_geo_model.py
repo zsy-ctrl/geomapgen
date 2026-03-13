@@ -259,6 +259,7 @@ def run_val(
     if desc:
         iterator = tqdm(loader, desc=desc, leave=False)
     use_amp = bool((cfg or {}).get("train", {}).get("amp", False)) and device.type == "cuda"
+    max_batches_cfg = int(artifact_cfg["max_batches_per_epoch"])
     with torch.inference_mode():
         for batch_index, batch in enumerate(iterator):
             with torch.amp.autocast("cuda", enabled=use_amp):
@@ -284,7 +285,7 @@ def run_val(
                 and text_tokenizer is not None
                 and bool(artifact_cfg["enabled"])
                 and bool(artifact_cfg["save_val_batch_geojson"])
-                and exported_batches < max(0, int(artifact_cfg["max_batches_per_epoch"]))
+                and (max_batches_cfg <= 0 or exported_batches < max_batches_cfg)
             ):
                 export_batch_geojson_snapshots(
                     cfg=cfg,
@@ -617,6 +618,7 @@ def run_training(config_path: str, mode_override: str = "") -> None:
         current_lr = float(train_cfg["lr"])
         epoch_pred_features: dict[str, list[dict]] = {name: [] for name in task_schemas.keys()}
         epoch_raster_meta = None
+        max_train_batches_cfg = int(artifact_cfg["max_batches_per_epoch"])
         for batch_index, batch in enumerate(pbar):
             batch_sample_id = str(batch["sample_ids"][0]) if batch.get("sample_ids") else f"batch_{batch_index}"
             current_lr = cosine_lr(
@@ -695,12 +697,13 @@ def run_training(config_path: str, mode_override: str = "") -> None:
             if (
                 bool(artifact_cfg["enabled"])
                 and bool(artifact_cfg["save_train_batch_geojson"])
-                and exported_train_batches < max(0, int(artifact_cfg["max_batches_per_epoch"]))
+                and (max_train_batches_cfg <= 0 or exported_train_batches < max_train_batches_cfg)
             ):
                 if bool(artifact_cfg.get("save_train_batch_predictions", False)):
                     print(
                         f"[Epoch {epoch}] Exporting train prediction snapshot "
-                        f"{exported_train_batches + 1}/{max(0, int(artifact_cfg['max_batches_per_epoch']))} "
+                        f"{exported_train_batches + 1}/"
+                        f"{'all' if max_train_batches_cfg <= 0 else max_train_batches_cfg} "
                         f"for sample={batch_sample_id} tile={int(batch['tile_indices'][0]) + 1}/{int(batch['tile_counts'][0])}",
                         flush=True,
                     )
@@ -748,6 +751,12 @@ def run_training(config_path: str, mode_override: str = "") -> None:
                 )
                 save_geojson_snapshot(
                     path=os.path.join(stitched_out_dir, f"{task_schema.collection_name}.stitched.pred.geojson"),
+                    task_schema=task_schema,
+                    feature_records=stitched_records,
+                    raster_meta=epoch_raster_meta,
+                )
+                save_geojson_snapshot(
+                    path=os.path.join(stitched_out_dir, f"{task_schema.collection_name}.geojson"),
                     task_schema=task_schema,
                     feature_records=stitched_records,
                     raster_meta=epoch_raster_meta,
