@@ -28,6 +28,136 @@ from unimapgen.geo.pipeline import (
 from unimapgen.utils import cosine_lr, load_yaml, select_torch_device, set_seed
 
 
+def _cfg_bool(value, default: bool = False) -> bool:
+    if value is None:
+        return bool(default)
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off", ""}:
+        return False
+    return bool(default)
+
+
+def _estimate_memory_risk(cfg: dict, batch_size: int) -> dict:
+    data_cfg = cfg.get("data", {})
+    text_cfg = cfg.get("text", {})
+    model_cfg = cfg.get("model", {})
+    state_cfg = cfg.get("state_update", {})
+    task_cfg = cfg.get("serialization", {}).get("tasks", {})
+    train_cfg = cfg.get("train", {})
+
+    image_size = int(data_cfg.get("image_size", 0) or 0)
+    prompt_max = int(text_cfg.get("prompt_max_tokens", 0) or 0)
+    state_max = int(text_cfg.get("state_max_tokens", 0) or 0)
+    target_max = int(text_cfg.get("target_max_tokens", 0) or 0)
+    lane_max = int(task_cfg.get("lane", {}).get("max_features", 0) or 0)
+    intersection_max = int(task_cfg.get("intersection", {}).get("max_features", 0) or 0)
+    state_max_features = int(state_cfg.get("max_features", 0) or 0)
+    amp_enabled = _cfg_bool(train_cfg.get("amp", False), default=False)
+    grad_ckpt = _cfg_bool(model_cfg.get("gradient_checkpointing", False), default=False)
+    llm_mode = str(model_cfg.get("llm_train_mode", "full")).strip().lower()
+
+    score = 0
+    reasons = []
+    suggestions = []
+
+    if llm_mode == "full":
+        score += 5
+        reasons.append("llm_train_mode=full")
+        suggestions.append("switch to LoRA if possible")
+    elif llm_mode == "lora":
+        score += 1
+        reasons.append("llm_train_mode=lora")
+
+    if image_size >= 448:
+        score += 3
+        reasons.append(f"image_size={image_size}")
+        suggestions.append("reduce image_size to 336 or 288")
+    elif image_size >= 384:
+        score += 2
+        reasons.append(f"image_size={image_size}")
+    elif image_size >= 336:
+        score += 1
+        reasons.append(f"image_size={image_size}")
+
+    if target_max == 0:
+        score += 3
+        reasons.append("target_max_tokens=unlimited")
+        suggestions.append("set target_max_tokens to 1024 or lower")
+    elif target_max > 1024:
+        score += 2
+        reasons.append(f"target_max_tokens={target_max}")
+
+    if state_max == 0:
+        score += 2
+        reasons.append("state_max_tokens=unlimited")
+        suggestions.append("set state_max_tokens to 512 or lower")
+    elif state_max > 512:
+        score += 1
+        reasons.append(f"state_max_tokens={state_max}")
+
+    if prompt_max == 0:
+        score += 1
+        reasons.append("prompt_max_tokens=unlimited")
+
+    if lane_max == 0:
+        score += 1
+        reasons.append("lane.max_features=unlimited")
+        suggestions.append("cap lane.max_features")
+    elif lane_max > 64:
+        score += 1
+        reasons.append(f"lane.max_features={lane_max}")
+
+    if intersection_max == 0:
+        score += 1
+        reasons.append("intersection.max_features=unlimited")
+        suggestions.append("cap intersection.max_features")
+    elif intersection_max > 32:
+        score += 1
+        reasons.append(f"intersection.max_features={intersection_max}")
+
+    if state_max_features > 16:
+        score += 1
+        reasons.append(f"state_update.max_features={state_max_features}")
+
+    if batch_size > 1:
+        score += max(2, batch_size)
+        reasons.append(f"batch_size={batch_size}")
+        suggestions.append("keep batch_size at 1")
+
+    if not amp_enabled:
+        score += 2
+        reasons.append("amp=false")
+        suggestions.append("enable amp")
+
+    if not grad_ckpt:
+        score += 2
+        reasons.append("gradient_checkpointing=false")
+        suggestions.append("enable gradient checkpointing")
+
+    level = "low"
+    if score >= 10:
+        level = "high"
+    elif score >= 6:
+        level = "medium"
+
+    uniq_suggestions = []
+    for item in suggestions:
+        if item not in uniq_suggestions:
+            uniq_suggestions.append(item)
+
+    return {
+        "level": level,
+        "score": int(score),
+        "reasons": reasons,
+        "suggestions": uniq_suggestions,
+        "llm_mode": llm_mode,
+    }
+
+
 def run_val(
     model,
     loader,
@@ -237,6 +367,21 @@ def run_training(config_path: str, mode_override: str = "") -> None:
             flush=True,
         )
     print(f"[Init] Device={device}", flush=True)
+    if device.type == "cuda":
+        try:
+            props = torch.cuda.get_device_properties(device)
+            total_gb = float(props.total_memory) / float(1024 ** 3)
+            print(f"[Init] GPU={props.name} total_vram_gb={total_gb:.1f}", flush=True)
+        except Exception:
+            pass
+    mem_risk = _estimate_memory_risk(cfg=cfg, batch_size=batch_size)
+    print(
+        f"[Init] Memory risk level={mem_risk['level']} score={mem_risk['score']} "
+        f"mode={mem_risk['llm_mode']} reasons={mem_risk['reasons']}",
+        flush=True,
+    )
+    if mem_risk["suggestions"]:
+        print(f"[Init] Memory suggestions={mem_risk['suggestions']}", flush=True)
     print(f"[Init] Tokenizer vocab={text_tokenizer.vocab_size}", flush=True)
     print(f"[Init] Trainable params={model.trainable_parameter_summary()}", flush=True)
     print(f"[Init] Output dir={out_dir}", flush=True)

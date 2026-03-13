@@ -6,24 +6,24 @@ $Device = ""
 $OutputDir = ""
 $RunName = ""
 $InitCheckpoint = ""
-$ImageSize = "336"
+$ImageSize = "308"
 $TileSizePx = "1024"
 $OverlapPx = "256"
 $KeepMarginPx = "128"
 $StateBorderMarginPx = "128"
 $SampleIntervalMeter = "6.0"
-$CoordBins = "1024"
-$LaneMaxFeatures = "64"
-$IntersectionMaxFeatures = "32"
-$StateMaxFeatures = "16"
-$StateAnchorMaxPoints = "6"
+$CoordBins = "768"
+$LaneMaxFeatures = "48"
+$IntersectionMaxFeatures = "24"
+$StateMaxFeatures = "8"
+$StateAnchorMaxPoints = "4"
 $BatchSize = "1"
 $ValBatchSize = "1"
 $Epochs = "10"
 $LearningRate = ""
-$PromptMaxTokens = "128"
-$StateMaxTokens = "512"
-$TargetMaxTokens = "1024"
+$PromptMaxTokens = "96"
+$StateMaxTokens = "256"
+$TargetMaxTokens = "768"
 $MaxNewTokens = "0"
 $MinNewTokens = "0"
 $MaxPropTokens = "0"
@@ -44,6 +44,7 @@ $CacheEnabled = "false"
 $CacheWriteEnabled = "true"
 $CacheDir = ""
 $CacheNamespace = "geo_patch_cache_v1"
+$CudaAllocConf = "expandable_segments:True"
 
 function Set-EnvIfValue([string]$Name, [string]$Value) {
     if ($null -ne $Value -and $Value -ne "") {
@@ -100,5 +101,6 @@ Set-EnvIfValue "UNIMAPGEN_CACHE_ENABLED" $CacheEnabled
 Set-EnvIfValue "UNIMAPGEN_CACHE_WRITE_ENABLED" $CacheWriteEnabled
 Set-EnvIfValue "UNIMAPGEN_CACHE_DIR" $CacheDir
 Set-EnvIfValue "UNIMAPGEN_CACHE_NAMESPACE" $CacheNamespace
+Set-EnvIfValue "PYTORCH_CUDA_ALLOC_CONF" $CudaAllocConf
 
 python -m unimapgen.train_geo_lora --config $Config

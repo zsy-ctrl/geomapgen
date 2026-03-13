@@ -10,7 +10,7 @@ data:
   label_relpaths:
     lane: label_check_crop/Lane.geojson
     intersection: label_check_crop/Intersection.geojson
-  image_size: ${UNIMAPGEN_IMAGE_SIZE:-336}
+  image_size: ${UNIMAPGEN_IMAGE_SIZE:-308}
   band_indices: [1, 2, 3]
   mask_threshold: 127
   crop_to_review_mask: true
@@ -38,12 +38,12 @@ data:
 
 serialization:
   sample_interval_meter: ${UNIMAPGEN_SAMPLE_INTERVAL_METER:-6.0}
-  coord_bins: ${UNIMAPGEN_COORD_BINS:-1024}
+  coord_bins: ${UNIMAPGEN_COORD_BINS:-768}
   tasks:
     lane:
       collection_name: Lane
       geometry_type: linestring
-      max_features: ${UNIMAPGEN_LANE_MAX_FEATURES:-64}
+      max_features: ${UNIMAPGEN_LANE_MAX_FEATURES:-48}
       min_points_per_feature: 2
       prompt_template: >
         Generate all lane instances present in the current patch as structured quantized coordinate tokens.
@@ -52,7 +52,7 @@ serialization:
     intersection:
       collection_name: Intersection
       geometry_type: polygon
-      max_features: ${UNIMAPGEN_INTERSECTION_MAX_FEATURES:-32}
+      max_features: ${UNIMAPGEN_INTERSECTION_MAX_FEATURES:-24}
       min_points_per_feature: 3
       prompt_template: >
         Generate all intersection polygons present in the current patch as structured quantized coordinate tokens.
@@ -68,15 +68,15 @@ prompt:
     No previous cut-point state anchors are available for this patch.
 
 text:
-  prompt_max_tokens: ${UNIMAPGEN_PROMPT_MAX_TOKENS:-128}
-  state_max_tokens: ${UNIMAPGEN_STATE_MAX_TOKENS:-512}
-  target_max_tokens: ${UNIMAPGEN_TARGET_MAX_TOKENS:-1024}
+  prompt_max_tokens: ${UNIMAPGEN_PROMPT_MAX_TOKENS:-96}
+  state_max_tokens: ${UNIMAPGEN_STATE_MAX_TOKENS:-256}
+  target_max_tokens: ${UNIMAPGEN_TARGET_MAX_TOKENS:-768}
 
 state_update:
   enabled: true
   border_margin_px: ${UNIMAPGEN_STATE_BORDER_MARGIN_PX:-128}
-  max_features: ${UNIMAPGEN_STATE_MAX_FEATURES:-16}
-  anchor_max_points: ${UNIMAPGEN_STATE_ANCHOR_MAX_POINTS:-6}
+  max_features: ${UNIMAPGEN_STATE_MAX_FEATURES:-8}
+  anchor_max_points: ${UNIMAPGEN_STATE_ANCHOR_MAX_POINTS:-4}
 
 model:
   dino_model_path: ${DINOV2_BACKBONE_PATH:-ckpts/dinov2}
@@ -84,23 +84,20 @@ model:
   local_files_only: true
   freeze_satellite: true
   llm_train_mode: lora
-  sat_token_hw: [4, 4]
+  sat_token_hw: [2, 2]
   sat_patch_size: 14
   sat_drop_cls_token: true
   sat_normalize_input: true
   gradient_checkpointing: true
   lora:
-    r: 16
-    alpha: 32
+    r: 8
+    alpha: 16
     dropout: 0.05
     target_modules:
       - q_proj
       - k_proj
       - v_proj
       - o_proj
-      - gate_proj
-      - up_proj
-      - down_proj
 
 train:
   base_output_dir: outputs/geo_vector_lora
