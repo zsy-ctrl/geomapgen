@@ -10,7 +10,7 @@ data:
   label_relpaths:
     lane: label_check_crop/Lane.geojson
     intersection: label_check_crop/Intersection.geojson
-  image_size: ${UNIMAPGEN_IMAGE_SIZE:-256}
+  image_size: ${UNIMAPGEN_IMAGE_SIZE:-128}
   band_indices: [1, 2, 3]
   mask_threshold: 127
   crop_to_review_mask: true
