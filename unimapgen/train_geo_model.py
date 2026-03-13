@@ -216,6 +216,26 @@ def run_training(config_path: str, mode_override: str = "") -> None:
     metrics_path = os.path.join(out_dir, "metrics.jsonl")
 
     print(f"[Init] Train records={len(train_set)} Val records={len(val_set)}", flush=True)
+    train_cache = getattr(train_set, "cache_stats", None)
+    if isinstance(train_cache, dict):
+        print(
+            f"[Init] Train cache enabled={train_cache.get('enabled', False)} "
+            f"root={train_cache.get('cache_root', '') or '-'} "
+            f"existing={train_cache.get('existing_records', 0)}/{train_cache.get('total_records', 0)} "
+            f"missing={train_cache.get('missing_records', 0)} "
+            f"write_enabled={train_cache.get('write_enabled', False)}",
+            flush=True,
+        )
+    val_cache = getattr(val_set, "cache_stats", None)
+    if isinstance(val_cache, dict):
+        print(
+            f"[Init] Val cache enabled={val_cache.get('enabled', False)} "
+            f"root={val_cache.get('cache_root', '') or '-'} "
+            f"existing={val_cache.get('existing_records', 0)}/{val_cache.get('total_records', 0)} "
+            f"missing={val_cache.get('missing_records', 0)} "
+            f"write_enabled={val_cache.get('write_enabled', False)}",
+            flush=True,
+        )
     print(f"[Init] Device={device}", flush=True)
     print(f"[Init] Tokenizer vocab={text_tokenizer.vocab_size}", flush=True)
     print(f"[Init] Trainable params={model.trainable_parameter_summary()}", flush=True)
@@ -336,6 +356,15 @@ def run_training(config_path: str, mode_override: str = "") -> None:
         with open(metrics_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
         print(record, flush=True)
+        train_runtime_hits = int(getattr(train_set, "cache_runtime_hits", 0))
+        train_runtime_misses = int(getattr(train_set, "cache_runtime_misses", 0))
+        val_runtime_hits = int(getattr(val_set, "cache_runtime_hits", 0))
+        val_runtime_misses = int(getattr(val_set, "cache_runtime_misses", 0))
+        print(
+            f"[Epoch {epoch}] Cache runtime train_hit={train_runtime_hits} train_miss={train_runtime_misses} "
+            f"val_hit={val_runtime_hits} val_miss={val_runtime_misses}",
+            flush=True,
+        )
 
 
 def main() -> None:

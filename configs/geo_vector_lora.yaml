@@ -19,6 +19,10 @@ data:
   train_filter_features_by_review_mask: true
   eval_filter_features_by_review_mask: true
   feature_mask_min_inside_ratio: 0.5
+  cache_enabled: ${UNIMAPGEN_CACHE_ENABLED:-false}
+  cache_write_enabled: ${UNIMAPGEN_CACHE_WRITE_ENABLED:-true}
+  cache_dir: ${UNIMAPGEN_CACHE_DIR:-}
+  cache_namespace: ${UNIMAPGEN_CACHE_NAMESPACE:-geo_patch_cache_v1}
   review_crop_pad_px: 64
   num_workers: 0
   val_num_workers: 0

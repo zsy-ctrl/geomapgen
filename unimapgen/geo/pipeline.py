@@ -15,6 +15,19 @@ from .schema import TaskSchema, load_task_schemas
 from .tokenizer import GeoCoordTokenizer
 
 
+def _parse_cfg_bool(value, default: bool = False) -> bool:
+    if value is None:
+        return bool(default)
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off", ""}:
+        return False
+    return bool(default)
+
+
 def load_geo_task_schemas(cfg: Dict) -> Dict[str, TaskSchema]:
     return load_task_schemas(cfg.get("serialization", {}))
 
@@ -119,6 +132,10 @@ def build_geo_dataset(
                 "No previous cut-point state anchors are available for this patch.",
             )
         ).strip(),
+        cache_enabled=_parse_cfg_bool(data_cfg.get("cache_enabled", False), default=False),
+        cache_write_enabled=_parse_cfg_bool(data_cfg.get("cache_write_enabled", True), default=True),
+        cache_dir=str(data_cfg.get("cache_dir", "")).strip() or None,
+        cache_namespace=str(data_cfg.get("cache_namespace", "geo_patch_cache_v1")).strip(),
     )
     selected_task_schemas = {name: task_schemas[name] for name in enabled_tasks}
     return GeoVectorDataset(

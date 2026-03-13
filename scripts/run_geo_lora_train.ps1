@@ -40,6 +40,10 @@ $SaveValBatchGeojson = "true"
 $ArtifactMaxBatchesPerEpoch = "1"
 $ArtifactMaxSamplesPerBatch = "1"
 $ArtifactMaxPatchImagesPerSample = "0"
+$CacheEnabled = "false"
+$CacheWriteEnabled = "true"
+$CacheDir = ""
+$CacheNamespace = "geo_patch_cache_v1"
 
 function Set-EnvIfValue([string]$Name, [string]$Value) {
     if ($null -ne $Value -and $Value -ne "") {
@@ -92,5 +96,9 @@ Set-EnvIfValue "UNIMAPGEN_SAVE_VAL_BATCH_GEOJSON" $SaveValBatchGeojson
 Set-EnvIfValue "UNIMAPGEN_ARTIFACT_MAX_BATCHES_PER_EPOCH" $ArtifactMaxBatchesPerEpoch
 Set-EnvIfValue "UNIMAPGEN_ARTIFACT_MAX_SAMPLES_PER_BATCH" $ArtifactMaxSamplesPerBatch
 Set-EnvIfValue "UNIMAPGEN_ARTIFACT_MAX_PATCH_IMAGES_PER_SAMPLE" $ArtifactMaxPatchImagesPerSample
+Set-EnvIfValue "UNIMAPGEN_CACHE_ENABLED" $CacheEnabled
+Set-EnvIfValue "UNIMAPGEN_CACHE_WRITE_ENABLED" $CacheWriteEnabled
+Set-EnvIfValue "UNIMAPGEN_CACHE_DIR" $CacheDir
+Set-EnvIfValue "UNIMAPGEN_CACHE_NAMESPACE" $CacheNamespace
 
 python -m unimapgen.train_geo_lora --config $Config

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -8,6 +9,7 @@ import numpy as np
 import torch
 from PIL import Image
 from torch.utils.data import Dataset
+from unimapgen.utils import ensure_dir
 
 from .coord_sequence import (
     points_abs_to_uv,
@@ -71,6 +73,10 @@ class GeoVectorDatasetConfig:
     state_anchor_max_points: int
     prompt_with_state: str
     prompt_without_state: str
+    cache_enabled: bool
+    cache_write_enabled: bool
+    cache_dir: Optional[str]
+    cache_namespace: str
 
 
 class GeoVectorDataset(Dataset):
@@ -83,6 +89,9 @@ class GeoVectorDataset(Dataset):
         self.task_schemas = dict(task_schemas)
         self.features_by_key: Dict[str, List[Dict]] = {}
         self.tile_audit_records: List[Dict] = []
+        self.cache_root = str(cfg.cache_dir).strip() if cfg.cache_dir else ""
+        self.cache_runtime_hits = 0
+        self.cache_runtime_misses = 0
 
         split_root = os.path.join(cfg.dataset_root, cfg.split)
         if not os.path.isdir(split_root):
@@ -168,56 +177,19 @@ class GeoVectorDataset(Dataset):
                     tile_neighbors=tile_neighbors,
                     crop_bbox=crop_bbox,
                 )
+        self.cache_stats = self._summarize_cache_stats()
 
     def __len__(self) -> int:
         return len(self.items)
 
     def __getitem__(self, idx: int) -> Dict:
         item = self.items[idx]
-        image_hwc, raster_meta = read_rgb_geotiff(
-            path=item["image_path"],
-            band_indices=self.cfg.band_indices,
-            crop_bbox=item["crop_bbox"],
-        )
-        review_mask = None
-        if bool(self.cfg.feature_filter_by_review_mask) and item["review_mask_path"] and os.path.isfile(item["review_mask_path"]):
-            review_mask = read_binary_mask(path=item["review_mask_path"], threshold=self.cfg.mask_threshold)
-        image_hwc = np.clip(image_hwc, 0.0, 255.0)
-        resize_ctx = build_resize_context(
-            width=int(raster_meta.width),
-            height=int(raster_meta.height),
-            target_size=int(self.cfg.image_size),
-            crop_bbox=item["crop_bbox"],
-        )
-        image_chw = self._resize_cropped_image(crop_hwc=image_hwc, resize_ctx=resize_ctx)
-
-        raw_features = self.features_by_key[item["feature_key"]]
-        target_features_abs = self._prepare_features(
-            raw_features=raw_features,
-            task_schema=item["task_schema"],
-            crop_bbox=item["crop_bbox"],
-            raster_meta=raster_meta,
-            review_mask=review_mask,
-            state_bboxes=None,
-            max_features=int(item["task_schema"].max_features),
-        )
-        state_bboxes = self._build_state_region_bboxes(
-            crop_bbox=item["crop_bbox"],
-            use_left=bool(item["state_has_left"]),
-            use_top=bool(item["state_has_top"]),
-        )
-        state_features_abs = self._prepare_features(
-            raw_features=raw_features,
-            task_schema=item["task_schema"],
-            crop_bbox=item["crop_bbox"],
-            raster_meta=raster_meta,
-            review_mask=review_mask,
-            state_bboxes=state_bboxes,
-            max_features=int(self.cfg.state_max_features),
-        )
-
-        target_features_uv = self._feature_records_to_uv(feature_records=target_features_abs, resize_ctx=resize_ctx)
-        state_features_uv = self._feature_records_to_uv(feature_records=state_features_abs, resize_ctx=resize_ctx)
+        base = self._load_or_build_cached_base(item=item)
+        raster_meta = base["raster_meta"]
+        resize_ctx = base["resize_ctx"]
+        image_chw = np.asarray(base["image_chw"], dtype=np.float32).copy()
+        target_features_uv = self._clone_feature_records(base["target_features_uv"])
+        state_features_uv = self._clone_feature_records(base["state_features_uv"])
 
         if bool(self.cfg.train_augment):
             rot_k, hflip, vflip = self._sample_augment_params()
@@ -273,6 +245,7 @@ class GeoVectorDataset(Dataset):
             "tile_count": int(item["tile_count"]),
             "state_has_left": bool(item["state_has_left"]),
             "state_has_top": bool(item["state_has_top"]),
+            "cache_path": item.get("cache_path", ""),
         }
 
     def _resize_cropped_image(self, crop_hwc: np.ndarray, resize_ctx) -> np.ndarray:
@@ -286,6 +259,129 @@ class GeoVectorDataset(Dataset):
             resize_ctx.pad_x : resize_ctx.pad_x + resize_ctx.resized_width,
         ] = resized
         return np.transpose(canvas / 255.0, (2, 0, 1)).astype(np.float32)
+
+    def _load_or_build_cached_base(self, item: Dict) -> Dict:
+        cache_path = str(item.get("cache_path", "")).strip()
+        if bool(self.cfg.cache_enabled) and cache_path and os.path.isfile(cache_path):
+            self.cache_runtime_hits += 1
+            cached = torch.load(cache_path, map_location="cpu", weights_only=False)
+            return {
+                "image_chw": np.asarray(cached["image_chw"], dtype=np.float32),
+                "raster_meta": dict(cached["raster_meta"]),
+                "resize_ctx": dict(cached["resize_ctx"]),
+                "target_features_uv": self._deserialize_feature_records(cached.get("target_features_uv", [])),
+                "state_features_uv": self._deserialize_feature_records(cached.get("state_features_uv", [])),
+            }
+        if bool(self.cfg.cache_enabled):
+            self.cache_runtime_misses += 1
+
+        image_hwc, raster_meta = read_rgb_geotiff(
+            path=item["image_path"],
+            band_indices=self.cfg.band_indices,
+            crop_bbox=item["crop_bbox"],
+        )
+        review_mask = None
+        if bool(self.cfg.feature_filter_by_review_mask) and item["review_mask_path"] and os.path.isfile(item["review_mask_path"]):
+            review_mask = read_binary_mask(path=item["review_mask_path"], threshold=self.cfg.mask_threshold)
+        image_hwc = np.clip(image_hwc, 0.0, 255.0)
+        resize_ctx = build_resize_context(
+            width=int(raster_meta.width),
+            height=int(raster_meta.height),
+            target_size=int(self.cfg.image_size),
+            crop_bbox=item["crop_bbox"],
+        )
+        image_chw = self._resize_cropped_image(crop_hwc=image_hwc, resize_ctx=resize_ctx)
+
+        raw_features = self.features_by_key[item["feature_key"]]
+        target_features_abs = self._prepare_features(
+            raw_features=raw_features,
+            task_schema=item["task_schema"],
+            crop_bbox=item["crop_bbox"],
+            raster_meta=raster_meta,
+            review_mask=review_mask,
+            state_bboxes=None,
+            max_features=int(item["task_schema"].max_features),
+        )
+        state_bboxes = self._build_state_region_bboxes(
+            crop_bbox=item["crop_bbox"],
+            use_left=bool(item["state_has_left"]),
+            use_top=bool(item["state_has_top"]),
+        )
+        state_features_abs = self._prepare_features(
+            raw_features=raw_features,
+            task_schema=item["task_schema"],
+            crop_bbox=item["crop_bbox"],
+            raster_meta=raster_meta,
+            review_mask=review_mask,
+            state_bboxes=state_bboxes,
+            max_features=int(self.cfg.state_max_features),
+        )
+        target_features_uv = self._feature_records_to_uv(feature_records=target_features_abs, resize_ctx=resize_ctx)
+        state_features_uv = self._feature_records_to_uv(feature_records=state_features_abs, resize_ctx=resize_ctx)
+
+        if bool(self.cfg.cache_write_enabled) and cache_path:
+            ensure_dir(os.path.dirname(cache_path))
+            torch.save(
+                {
+                    "image_chw": np.asarray(image_chw, dtype=np.float32),
+                    "raster_meta": raster_meta.to_dict(),
+                    "resize_ctx": resize_ctx.to_dict(),
+                    "target_features_uv": self._serialize_feature_records(target_features_uv),
+                    "state_features_uv": self._serialize_feature_records(state_features_uv),
+                },
+                cache_path,
+            )
+
+        return {
+            "image_chw": np.asarray(image_chw, dtype=np.float32),
+            "raster_meta": raster_meta.to_dict(),
+            "resize_ctx": resize_ctx.to_dict(),
+            "target_features_uv": self._clone_feature_records(target_features_uv),
+            "state_features_uv": self._clone_feature_records(state_features_uv),
+        }
+
+    def _summarize_cache_stats(self) -> Dict[str, object]:
+        total_records = int(len(self.items))
+        if not bool(self.cfg.cache_enabled) or not self.cache_root:
+            return {
+                "enabled": bool(self.cfg.cache_enabled),
+                "cache_root": self.cache_root,
+                "total_records": total_records,
+                "existing_records": 0,
+                "missing_records": total_records,
+                "write_enabled": bool(self.cfg.cache_write_enabled),
+            }
+        existing_records = 0
+        for item in self.items:
+            cache_path = str(item.get("cache_path", "")).strip()
+            if cache_path and os.path.isfile(cache_path):
+                existing_records += 1
+        return {
+            "enabled": True,
+            "cache_root": self.cache_root,
+            "total_records": total_records,
+            "existing_records": int(existing_records),
+            "missing_records": int(max(0, total_records - existing_records)),
+            "write_enabled": bool(self.cfg.cache_write_enabled),
+        }
+
+    def _serialize_feature_records(self, feature_records: Sequence[Dict]) -> List[Dict]:
+        return self._clone_feature_records(feature_records)
+
+    def _deserialize_feature_records(self, feature_records: Sequence[Dict]) -> List[Dict]:
+        return self._clone_feature_records(feature_records)
+
+    def _clone_feature_records(self, feature_records: Sequence[Dict]) -> List[Dict]:
+        out: List[Dict] = []
+        for feature in feature_records:
+            record = {
+                "properties": dict(feature.get("properties", {})),
+                "points": np.asarray(feature.get("points", []), dtype=np.float32).copy(),
+            }
+            if feature.get("rings"):
+                record["rings"] = [np.asarray(ring, dtype=np.float32).copy() for ring in feature.get("rings", [])]
+            out.append(record)
+        return out
 
     def _feature_records_to_uv(self, feature_records: Sequence[Dict], resize_ctx) -> List[Dict]:
         out = []
@@ -625,8 +721,59 @@ class GeoVectorDataset(Dataset):
                     "tile_count": int(tile_count),
                     "state_has_left": bool(neighbors.get("left", False)),
                     "state_has_top": bool(neighbors.get("top", False)),
+                    "cache_path": self._build_cache_path(
+                        sample_id=sample_id,
+                        task_name=task_name,
+                        tile_index=int(tile_index),
+                        crop_bbox=effective_crop_bbox,
+                        state_has_left=bool(neighbors.get("left", False)),
+                        state_has_top=bool(neighbors.get("top", False)),
+                    ),
                 }
             )
+
+    def _build_cache_path(
+        self,
+        sample_id: str,
+        task_name: str,
+        tile_index: int,
+        crop_bbox: Optional[Sequence[int]],
+        state_has_left: bool,
+        state_has_top: bool,
+    ) -> str:
+        if not self.cache_root:
+            return ""
+        crop_text = "full" if crop_bbox is None else "_".join(str(int(v)) for v in crop_bbox)
+        key = "|".join(
+            [
+                str(self.cfg.cache_namespace),
+                str(self.cfg.stage),
+                str(self.cfg.split),
+                str(sample_id),
+                str(task_name),
+                str(int(tile_index)),
+                crop_text,
+                str(int(self.cfg.image_size)),
+                str(int(self.cfg.tile_size_px)),
+                str(int(self.cfg.tile_overlap_px)),
+                str(int(self.cfg.tile_keep_margin_px)),
+                str(self.cfg.sample_interval_meter),
+                str(int(self.cfg.mask_threshold)),
+                str(int(bool(self.cfg.feature_filter_by_review_mask))),
+                str(int(bool(state_has_left))),
+                str(int(bool(state_has_top))),
+                str(int(self.cfg.state_border_margin_px)),
+                str(int(self.cfg.state_max_features)),
+            ]
+        )
+        digest = hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
+        return os.path.join(
+            self.cache_root,
+            str(self.cfg.split),
+            str(sample_id),
+            str(task_name),
+            f"tile_{int(tile_index):04d}_{digest}.pt",
+        )
 
 
 class GeoVectorCollator:
