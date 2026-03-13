@@ -388,6 +388,8 @@ def run_training(config_path: str, mode_override: str = "") -> None:
     print(f"[Init] State update cfg={cfg.get('state_update', {})}", flush=True)
 
     for epoch in range(start_epoch, epochs + 1):
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
         model.train()
         ep_loss = 0.0
         ep_count = 0
@@ -450,6 +452,8 @@ def run_training(config_path: str, mode_override: str = "") -> None:
 
         train_loss = ep_loss / max(ep_count, 1)
         train_sec = time.time() - t0
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
         val_t0 = time.time()
         val_loss, val_token_acc = run_val(
             model,
