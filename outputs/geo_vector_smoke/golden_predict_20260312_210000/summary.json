@@ -1,0 +1,21 @@
+{
+  "sample_id": "sample_val_0001",
+  "image_path": "data/geo_vector_dataset_smoke\\val\\sample_val_0001\\patch_tif/0.tif",
+  "generated_at": 1773320355.5197768,
+  "tasks": {
+    "lane": {
+      "golden_feature_count": 6,
+      "pred_feature_count": 6,
+      "output_path": "outputs\\geo_vector_smoke\\golden_predict_20260312_210000\\sample_val_0001\\Lane.geojson",
+      "golden_path": "outputs\\geo_vector_smoke\\golden_predict_20260312_210000\\sample_val_0001\\Lane.golden_input.geojson",
+      "raw_tiles_path": "outputs\\geo_vector_smoke\\golden_predict_20260312_210000\\sample_val_0001\\Lane.raw_tiles.json"
+    },
+    "intersection": {
+      "golden_feature_count": 4,
+      "pred_feature_count": 4,
+      "output_path": "outputs\\geo_vector_smoke\\golden_predict_20260312_210000\\sample_val_0001\\Intersection.geojson",
+      "golden_path": "outputs\\geo_vector_smoke\\golden_predict_20260312_210000\\sample_val_0001\\Intersection.golden_input.geojson",
+      "raw_tiles_path": "outputs\\geo_vector_smoke\\golden_predict_20260312_210000\\sample_val_0001\\Intersection.raw_tiles.json"
+    }
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "config": "configs/geo_vector_smoke_current.yaml",
+  "split": "train",
+  "sample_dir": "data/geo_vector_dataset_smoke\\train\\sample_train_0001",
+  "image_path": "data/geo_vector_dataset_smoke\\train\\sample_train_0001\\patch_tif/0.tif",
+  "image_size": 30,
+  "coord_bins": 32,
+  "tasks": {
+    "lane": {
+      "input_feature_count": 3,
+      "target_item_count": 3,
+      "token_count": 413,
+      "decoded_item_count": 3,
+      "decode_info": {
+        "valid_objects": 3,
+        "saw_object": true
+      },
+      "roundtrip_feature_count": 3
+    },
+    "intersection": {
+      "input_feature_count": 3,
+      "target_item_count": 3,
+      "token_count": 170,
+      "decoded_item_count": 3,
+      "decode_info": {
+        "valid_objects": 3,
+        "saw_object": true
+      },
+      "roundtrip_feature_count": 3
+    }
+  }
+}

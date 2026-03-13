@@ -1,0 +1,1 @@
+{"epoch": 1, "train_loss": 10.826702038447062, "val_loss": 10.825581789016724, "val_token_acc": 0.0, "train_sec": 876.4121165275574, "val_sec": 312.6794617176056, "checkpoint_sec": 0.020999908447265625, "global_step": 12, "best_updated": true, "output_dir": "c:\\DevelopProject\\VScode\\UniMapGenStrongBaseline\\outputs\\geo_vector_smoke_multi\\smoke_full_20260312_205200"}

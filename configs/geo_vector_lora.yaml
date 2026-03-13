@@ -1,0 +1,183 @@
+seed: 42
+
+data:
+  dataset_root: ${UNIMAPGEN_GEO_ROOT:-data/geo_vector_dataset}
+  train_split: train
+  val_split: val
+  test_split: test
+  image_relpath: patch_tif/0.tif
+  review_mask_relpath: patch_tif/0_edit_poly.tif
+  label_relpaths:
+    lane: label_check_crop/Lane.geojson
+    intersection: label_check_crop/Intersection.geojson
+  image_size: ${UNIMAPGEN_IMAGE_SIZE:-448}
+  band_indices: [1, 2, 3]
+  mask_threshold: 127
+  crop_to_review_mask: true
+  train_crop_to_review_mask: true
+  val_crop_to_review_mask: true
+  train_filter_features_by_review_mask: true
+  eval_filter_features_by_review_mask: true
+  feature_mask_min_inside_ratio: 0.5
+  review_crop_pad_px: 64
+  num_workers: 0
+  val_num_workers: 0
+  train_augment: true
+  aug_rot90_prob: 0.25
+  aug_hflip_prob: 0.25
+  aug_vflip_prob: 0.0
+  max_train_samples: null
+  max_val_samples: null
+  task_enable:
+    lane: true
+    intersection: true
+
+serialization:
+  sample_interval_meter: ${UNIMAPGEN_SAMPLE_INTERVAL_METER:-6.0}
+  coord_bins: ${UNIMAPGEN_COORD_BINS:-1024}
+  tasks:
+    lane:
+      collection_name: Lane
+      geometry_type: linestring
+      max_features: ${UNIMAPGEN_LANE_MAX_FEATURES:-0}
+      min_points_per_feature: 2
+      prompt_template: >
+        Generate all lane instances present in the current patch as structured quantized coordinate tokens.
+        Do not assume a fixed lane count or a fixed property template from any example.
+        Learn lane property keys and values from the supervision GeoJSON and use cut-point aware local increments only.
+    intersection:
+      collection_name: Intersection
+      geometry_type: polygon
+      max_features: ${UNIMAPGEN_INTERSECTION_MAX_FEATURES:-0}
+      min_points_per_feature: 3
+      prompt_template: >
+        Generate all intersection polygons present in the current patch as structured quantized coordinate tokens.
+        Do not assume a fixed intersection count or a fixed property template from any example.
+        Learn intersection property keys and values from the supervision GeoJSON.
+        Output polygon boundary points in order; the final GeoJSON ring must be closed so the first and last coordinate are identical.
+        Use cut-point aware local increments only.
+
+prompt:
+  with_state_suffix: >
+    Previous cut-point state anchors are provided below. Continue only the local increment needed for this patch.
+  without_state_suffix: >
+    No previous cut-point state anchors are available for this patch.
+
+text:
+  prompt_max_tokens: ${UNIMAPGEN_PROMPT_MAX_TOKENS:-0}
+  state_max_tokens: ${UNIMAPGEN_STATE_MAX_TOKENS:-0}
+  target_max_tokens: ${UNIMAPGEN_TARGET_MAX_TOKENS:-0}
+
+state_update:
+  enabled: true
+  border_margin_px: ${UNIMAPGEN_STATE_BORDER_MARGIN_PX:-128}
+  max_features: ${UNIMAPGEN_STATE_MAX_FEATURES:-32}
+  anchor_max_points: ${UNIMAPGEN_STATE_ANCHOR_MAX_POINTS:-6}
+
+model:
+  dino_model_path: ${DINOV2_BACKBONE_PATH:-ckpts/dinov2}
+  qwen_model_path: ${QWEN_MODEL_PATH:-ckpts/qwen}
+  local_files_only: true
+  freeze_satellite: true
+  llm_train_mode: lora
+  sat_token_hw: [4, 4]
+  sat_patch_size: 14
+  sat_drop_cls_token: true
+  sat_normalize_input: true
+  gradient_checkpointing: false
+  lora:
+    r: 16
+    alpha: 32
+    dropout: 0.05
+    target_modules:
+      - q_proj
+      - k_proj
+      - v_proj
+      - o_proj
+      - gate_proj
+      - up_proj
+      - down_proj
+
+train:
+  base_output_dir: outputs/geo_vector_lora
+  output_dir: ${UNIMAPGEN_OUTPUT_DIR:-}
+  run_name: ${UNIMAPGEN_RUN_NAME:-}
+  resume_in_place: false
+  init_checkpoint: ${UNIMAPGEN_INIT_CHECKPOINT:-}
+  resume_optimizer: true
+  resume_scaler: true
+  batch_size: ${UNIMAPGEN_BATCH_SIZE:-1}
+  val_batch_size: ${UNIMAPGEN_VAL_BATCH_SIZE:-1}
+  epochs: ${UNIMAPGEN_EPOCHS:-10}
+  lr: ${UNIMAPGEN_LR:-0.00005}
+  weight_decay: 0.01
+  warmup_steps: 32
+  grad_clip_norm: 1.0
+  amp: false
+  save_latest: true
+
+decode:
+  max_new_tokens: ${UNIMAPGEN_MAX_NEW_TOKENS:-0}
+  min_new_tokens: ${UNIMAPGEN_MIN_NEW_TOKENS:-0}
+  max_prop_tokens: ${UNIMAPGEN_MAX_PROP_TOKENS:-0}
+  temperature: ${UNIMAPGEN_TEMPERATURE:-1.0}
+  top_k: ${UNIMAPGEN_TOP_K:-1}
+  repetition_penalty: ${UNIMAPGEN_REPETITION_PENALTY:-1.02}
+  use_kv_cache: ${UNIMAPGEN_USE_KV_CACHE:-true}
+
+artifact_export:
+  enabled: ${UNIMAPGEN_ARTIFACT_EXPORT_ENABLED:-true}
+  save_kept_patches: ${UNIMAPGEN_SAVE_KEPT_PATCHES:-true}
+  save_discarded_patches: ${UNIMAPGEN_SAVE_DISCARDED_PATCHES:-true}
+  save_resized_patch_inputs: ${UNIMAPGEN_SAVE_RESIZED_PATCH_INPUTS:-true}
+  save_train_batch_geojson: ${UNIMAPGEN_SAVE_TRAIN_BATCH_GEOJSON:-true}
+  save_val_batch_geojson: ${UNIMAPGEN_SAVE_VAL_BATCH_GEOJSON:-true}
+  save_eval_sample_geojson: ${UNIMAPGEN_SAVE_EVAL_SAMPLE_GEOJSON:-true}
+  save_predict_tile_geojson: ${UNIMAPGEN_SAVE_PREDICT_TILE_GEOJSON:-true}
+  max_batches_per_epoch: ${UNIMAPGEN_ARTIFACT_MAX_BATCHES_PER_EPOCH:-1}
+  max_samples_per_batch: ${UNIMAPGEN_ARTIFACT_MAX_SAMPLES_PER_BATCH:-1}
+  max_patch_images_per_sample: ${UNIMAPGEN_ARTIFACT_MAX_PATCH_IMAGES_PER_SAMPLE:-0}
+
+evaluation:
+  lane_match_distance_m: 2.0
+  intersection_iou_threshold: 0.3
+  review_mask_min_inside_ratio: 0.5
+
+tiling:
+  train:
+    enabled: true
+    tile_size_px: ${UNIMAPGEN_TILE_SIZE_PX:-1024}
+    overlap_px: ${UNIMAPGEN_OVERLAP_PX:-256}
+    keep_margin_px: ${UNIMAPGEN_KEEP_MARGIN_PX:-128}
+    min_review_ratio: 0.002
+    min_review_pixels: 2048
+    fallback_to_all_if_empty: false
+    search_within_review_bbox: true
+    allow_empty_tiles: false
+    max_tiles_per_sample: null
+  eval:
+    enabled: true
+    tile_size_px: ${UNIMAPGEN_TILE_SIZE_PX:-1024}
+    overlap_px: ${UNIMAPGEN_OVERLAP_PX:-256}
+    keep_margin_px: ${UNIMAPGEN_KEEP_MARGIN_PX:-128}
+    min_review_ratio: 0.0
+    min_review_pixels: 0
+    fallback_to_all_if_empty: true
+    search_within_review_bbox: true
+    allow_empty_tiles: true
+    max_tiles_per_sample: null
+  predict:
+    enabled: true
+    tile_size_px: ${UNIMAPGEN_TILE_SIZE_PX:-1024}
+    overlap_px: ${UNIMAPGEN_OVERLAP_PX:-256}
+    keep_margin_px: ${UNIMAPGEN_KEEP_MARGIN_PX:-128}
+    min_review_ratio: 0.0
+    min_review_pixels: 0
+    fallback_to_all_if_empty: true
+    search_within_review_bbox: false
+    allow_empty_tiles: true
+    max_tiles_per_sample: null
+
+postprocess:
+  line_dedup_distance_m: 1.0
+  polygon_dedup_iou: 0.5

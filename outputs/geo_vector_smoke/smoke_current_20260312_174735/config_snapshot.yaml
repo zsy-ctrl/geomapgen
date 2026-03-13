@@ -1,0 +1,175 @@
+seed: 42
+data:
+  dataset_root: data/geo_vector_dataset_smoke
+  train_split: train
+  val_split: val
+  test_split: val
+  image_relpath: patch_tif/0.tif
+  review_mask_relpath: patch_tif/0_edit_poly.tif
+  label_relpaths:
+    lane: label_check_crop/Lane.geojson
+    intersection: label_check_crop/Intersection.geojson
+  image_size: 30
+  band_indices:
+  - 1
+  - 2
+  - 3
+  mask_threshold: 127
+  crop_to_review_mask: true
+  train_crop_to_review_mask: true
+  val_crop_to_review_mask: false
+  train_filter_features_by_review_mask: true
+  eval_filter_features_by_review_mask: false
+  feature_mask_min_inside_ratio: 0.5
+  review_crop_pad_px: 16
+  num_workers: 0
+  val_num_workers: 0
+  train_augment: false
+  max_train_samples: 1
+  max_val_samples: 1
+  task_enable:
+    lane: true
+    intersection: true
+serialization:
+  sample_interval_meter: 1.0
+  coord_bins: 32
+  tasks:
+    lane:
+      collection_name: Lane
+      geometry_type: linestring
+      max_features: 16
+      min_points_per_feature: 2
+      prompt_template: 'Generate all lane instances present in the current patch as
+        structured quantized coordinate tokens. Do not assume a fixed lane count or
+        a fixed property template from any example. Learn lane property keys and values
+        from the supervision GeoJSON and use cut-point aware local increments only.
+
+        '
+    intersection:
+      collection_name: Intersection
+      geometry_type: polygon
+      max_features: 8
+      min_points_per_feature: 3
+      prompt_template: 'Generate all intersection polygons present in the current
+        patch as structured quantized coordinate tokens. Do not assume a fixed intersection
+        count or a fixed property template from any example. Learn intersection property
+        keys and values from the supervision GeoJSON. Output polygon boundary points
+        in order; the final GeoJSON ring must be closed so the first and last coordinate
+        are identical. Use cut-point aware local increments only.
+
+        '
+prompt:
+  with_state_suffix: 'Previous cut-point state anchors are provided below. Continue
+    only the local increment needed for this patch.
+
+    '
+  without_state_suffix: 'No previous cut-point state anchors are available for this
+    patch.
+
+    '
+text:
+  prompt_max_tokens: 128
+  state_max_tokens: 256
+  target_max_tokens: 512
+state_update:
+  enabled: true
+  border_margin_px: 8
+  max_features: 8
+  anchor_max_points: 4
+model:
+  dino_model_path: ckpts/tiny-vit
+  qwen_model_path: ckpts/tiny-gpt2
+  local_files_only: true
+  freeze_satellite: true
+  llm_train_mode: full
+  sat_token_hw:
+  - 2
+  - 2
+  sat_patch_size: 2
+  sat_drop_cls_token: true
+  sat_normalize_input: true
+  gradient_checkpointing: false
+  lora:
+    r: 8
+    alpha: 16
+    dropout: 0.05
+    target_modules:
+    - c_attn
+    - c_proj
+train:
+  base_output_dir: outputs/geo_vector_smoke
+  output_dir: ''
+  run_name: smoke_current_20260312_174735
+  resume_in_place: false
+  init_checkpoint: ''
+  resume_optimizer: true
+  resume_scaler: true
+  batch_size: 1
+  val_batch_size: 1
+  epochs: 1
+  lr: 0.0001
+  weight_decay: 0.0
+  warmup_steps: 0
+  grad_clip_norm: 1.0
+  amp: false
+  save_latest: true
+decode:
+  max_new_tokens: 128
+  min_new_tokens: 4
+  temperature: 1.0
+  top_k: 1
+  repetition_penalty: 1.0
+  use_kv_cache: true
+artifact_export:
+  enabled: false
+  save_kept_patches: false
+  save_discarded_patches: false
+  save_resized_patch_inputs: false
+  save_train_batch_geojson: false
+  save_val_batch_geojson: false
+  save_eval_sample_geojson: false
+  save_predict_tile_geojson: false
+  max_batches_per_epoch: 0
+  max_samples_per_batch: 0
+  max_patch_images_per_sample: 0
+evaluation:
+  lane_match_distance_m: 2.0
+  intersection_iou_threshold: 0.3
+  review_mask_min_inside_ratio: 0.5
+tiling:
+  train:
+    enabled: false
+    tile_size_px: 64
+    overlap_px: 0
+    keep_margin_px: 0
+    min_review_ratio: 0.0
+    min_review_pixels: 0
+    fallback_to_all_if_empty: false
+    search_within_review_bbox: false
+    allow_empty_tiles: true
+    max_tiles_per_sample: 1
+  eval:
+    enabled: false
+    tile_size_px: 64
+    overlap_px: 0
+    keep_margin_px: 0
+    min_review_ratio: 0.0
+    min_review_pixels: 0
+    fallback_to_all_if_empty: true
+    search_within_review_bbox: false
+    allow_empty_tiles: true
+    max_tiles_per_sample: 1
+  predict:
+    enabled: false
+    tile_size_px: 64
+    overlap_px: 0
+    keep_margin_px: 0
+    min_review_ratio: 0.0
+    min_review_pixels: 0
+    fallback_to_all_if_empty: true
+    search_within_review_bbox: false
+    allow_empty_tiles: true
+    max_tiles_per_sample: 1
+postprocess:
+  line_dedup_distance_m: 1.0
+  polygon_dedup_iou: 0.5

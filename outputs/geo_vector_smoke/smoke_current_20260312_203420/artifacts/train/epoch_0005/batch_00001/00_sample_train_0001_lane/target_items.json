@@ -1,0 +1,44 @@
+[
+  {
+    "geometry_type": "linestring",
+    "props_json": "{\"Id\":\"sample_train_0001_lane_1\",\"IsIntersectionInLane\":true,\"IsIntersectionOutLane\":true,\"IsLeftmost\":true,\"IsRightmost\":true,\"IsThereRoadSplit\":false,\"IsThereStopLine\":false,\"LaneType\":14,\"LaneTypeSource\":32,\"Length\":1760,\"RoadIDSource\":0,\"RoadId\":\"sample_train_0001_road\",\"Source\":0,\"TurnType\":1,\"TurnTypeSource\":2,\"Width\":3.5}",
+    "points_uv": [
+      [
+        4.6875,
+        14.8828125
+      ],
+      [
+        7.632882118225098,
+        14.8828125
+      ],
+      [
+        10.578265190124512,
+        14.8828125
+      ],
+      [
+        13.52364730834961,
+        14.8828125
+      ],
+      [
+        16.46902847290039,
+        14.8828125
+      ],
+      [
+        19.414409637451172,
+        14.8828125
+      ],
+      [
+        22.35979461669922,
+        14.8828125
+      ],
+      [
+        25.30517578125,
+        14.8828125
+      ]
+    ],
+    "rings_uv": null,
+    "cut_in": "none",
+    "cut_out": "none",
+    "source": "local"
+  }
+]

@@ -1,0 +1,39 @@
+[
+  {
+    "tile_index": 0,
+    "crop_bbox": null,
+    "keep_bbox": null,
+    "decoded_ok": true,
+    "item_count": 0,
+    "pred_feature_count": 0,
+    "kept_feature_count": 0,
+    "state_anchor_count": 0,
+    "token_ids": [
+      50257,
+      50256
+    ],
+    "pred_geojson": {
+      "type": "FeatureCollection",
+      "name": "Lane",
+      "crs": {
+        "type": "name",
+        "properties": {
+          "name": "urn:ogc:def:crs:OGC:1.3:CRS84"
+        }
+      },
+      "features": []
+    },
+    "kept_geojson": {
+      "type": "FeatureCollection",
+      "name": "Lane",
+      "crs": {
+        "type": "name",
+        "properties": {
+          "name": "urn:ogc:def:crs:OGC:1.3:CRS84"
+        }
+      },
+      "features": []
+    },
+    "items": []
+  }
+]

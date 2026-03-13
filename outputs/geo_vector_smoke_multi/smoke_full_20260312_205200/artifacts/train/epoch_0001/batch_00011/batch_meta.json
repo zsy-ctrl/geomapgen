@@ -1,0 +1,10 @@
+{
+  "epoch": 1,
+  "batch_index": 11,
+  "sample_ids": [
+    "sample_train_0001"
+  ],
+  "task_names": [
+    "intersection"
+  ]
+}

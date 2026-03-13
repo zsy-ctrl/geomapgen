@@ -1,0 +1,26 @@
+[
+  {
+    "sample_id": "sample_val_0001",
+    "image_path": "data/geo_vector_dataset_smoke\\val\\sample_val_0001\\patch_tif/0.tif",
+    "outputs": {
+      "lane": "outputs/geo_vector_smoke\\predict_smoke_current_20260312_174735_fix2\\sample_val_0001\\Lane.geojson",
+      "intersection": "outputs/geo_vector_smoke\\predict_smoke_current_20260312_174735_fix2\\sample_val_0001\\Intersection.geojson"
+    },
+    "parse_stats": {
+      "lane": {
+        "tile_count": 1,
+        "decoded_ok_count": 1,
+        "non_empty_feature_tiles": 0
+      },
+      "intersection": {
+        "tile_count": 1,
+        "decoded_ok_count": 1,
+        "non_empty_feature_tiles": 0
+      }
+    },
+    "debug_outputs": {
+      "lane": "outputs/geo_vector_smoke\\predict_smoke_current_20260312_174735_fix2\\sample_val_0001\\Lane.raw_tiles.json",
+      "intersection": "outputs/geo_vector_smoke\\predict_smoke_current_20260312_174735_fix2\\sample_val_0001\\Intersection.raw_tiles.json"
+    }
+  }
+]

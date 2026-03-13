@@ -1,0 +1,122 @@
+[
+  {
+    "stage": "train",
+    "split": "train",
+    "sample_id": "sample_train_0001",
+    "sample_dir": "data/geo_vector_dataset_smoke_multi\\train\\sample_train_0001",
+    "image_path": "data/geo_vector_dataset_smoke_multi\\train\\sample_train_0001\\patch_tif/0.tif",
+    "crop_bbox": [
+      0,
+      0,
+      128,
+      128
+    ],
+    "candidate_index": 0,
+    "selected": true,
+    "reason": "tiling_disabled",
+    "bbox": null,
+    "keep_bbox": null,
+    "mask_ratio": 0.0,
+    "mask_pixels": 0
+  },
+  {
+    "stage": "train",
+    "split": "train",
+    "sample_id": "sample_train_0002",
+    "sample_dir": "data/geo_vector_dataset_smoke_multi\\train\\sample_train_0002",
+    "image_path": "data/geo_vector_dataset_smoke_multi\\train\\sample_train_0002\\patch_tif/0.tif",
+    "crop_bbox": [
+      0,
+      0,
+      128,
+      128
+    ],
+    "candidate_index": 0,
+    "selected": true,
+    "reason": "tiling_disabled",
+    "bbox": null,
+    "keep_bbox": null,
+    "mask_ratio": 0.0,
+    "mask_pixels": 0
+  },
+  {
+    "stage": "train",
+    "split": "train",
+    "sample_id": "sample_train_0003",
+    "sample_dir": "data/geo_vector_dataset_smoke_multi\\train\\sample_train_0003",
+    "image_path": "data/geo_vector_dataset_smoke_multi\\train\\sample_train_0003\\patch_tif/0.tif",
+    "crop_bbox": [
+      0,
+      0,
+      128,
+      128
+    ],
+    "candidate_index": 0,
+    "selected": true,
+    "reason": "tiling_disabled",
+    "bbox": null,
+    "keep_bbox": null,
+    "mask_ratio": 0.0,
+    "mask_pixels": 0
+  },
+  {
+    "stage": "train",
+    "split": "train",
+    "sample_id": "sample_train_0004",
+    "sample_dir": "data/geo_vector_dataset_smoke_multi\\train\\sample_train_0004",
+    "image_path": "data/geo_vector_dataset_smoke_multi\\train\\sample_train_0004\\patch_tif/0.tif",
+    "crop_bbox": [
+      0,
+      0,
+      128,
+      128
+    ],
+    "candidate_index": 0,
+    "selected": true,
+    "reason": "tiling_disabled",
+    "bbox": null,
+    "keep_bbox": null,
+    "mask_ratio": 0.0,
+    "mask_pixels": 0
+  },
+  {
+    "stage": "train",
+    "split": "train",
+    "sample_id": "sample_train_0005",
+    "sample_dir": "data/geo_vector_dataset_smoke_multi\\train\\sample_train_0005",
+    "image_path": "data/geo_vector_dataset_smoke_multi\\train\\sample_train_0005\\patch_tif/0.tif",
+    "crop_bbox": [
+      0,
+      0,
+      128,
+      128
+    ],
+    "candidate_index": 0,
+    "selected": true,
+    "reason": "tiling_disabled",
+    "bbox": null,
+    "keep_bbox": null,
+    "mask_ratio": 0.0,
+    "mask_pixels": 0
+  },
+  {
+    "stage": "train",
+    "split": "train",
+    "sample_id": "sample_train_0006",
+    "sample_dir": "data/geo_vector_dataset_smoke_multi\\train\\sample_train_0006",
+    "image_path": "data/geo_vector_dataset_smoke_multi\\train\\sample_train_0006\\patch_tif/0.tif",
+    "crop_bbox": [
+      0,
+      0,
+      128,
+      128
+    ],
+    "candidate_index": 0,
+    "selected": true,
+    "reason": "tiling_disabled",
+    "bbox": null,
+    "keep_bbox": null,
+    "mask_ratio": 0.0,
+    "mask_pixels": 0
+  }
+]

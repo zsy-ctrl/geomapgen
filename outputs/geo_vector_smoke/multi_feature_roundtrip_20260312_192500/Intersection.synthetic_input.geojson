@@ -1,0 +1,135 @@
+{
+  "type": "FeatureCollection",
+  "name": "Intersection",
+  "crs": {
+    "type": "name",
+    "properties": {
+      "name": "urn:ogc:def:crs:OGC:1.3:CRS84"
+    }
+  },
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "Id": "sample_train_0001_intersection_1_dup1",
+        "IntersectionType": 1,
+        "IsRegular": true,
+        "IntersectionSubType": 1
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              116.62765525624499,
+              40.092371002295,
+              0.0
+            ],
+            [
+              116.62773517166764,
+              40.09237125915021,
+              0.0
+            ],
+            [
+              116.6277355152711,
+              40.09230819287203,
+              0.0
+            ],
+            [
+              116.62765559992219,
+              40.0923079360174,
+              0.0
+            ],
+            [
+              116.62765525624499,
+              40.092371002295,
+              0.0
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "Id": "sample_train_0001_intersection_1_dup2",
+        "IntersectionType": 1,
+        "IsRegular": true,
+        "IntersectionSubType": 1
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              116.6276648119899,
+              40.092366528197914,
+              0.0
+            ],
+            [
+              116.62774472740742,
+              40.0923667850465,
+              0.0
+            ],
+            [
+              116.627745071002,
+              40.09230371876821,
+              0.0
+            ],
+            [
+              116.62766515565825,
+              40.09230346192018,
+              0.0
+            ],
+            [
+              116.6276648119899,
+              40.092366528197914,
+              0.0
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "Id": "sample_train_0001_intersection_1_dup3",
+        "IntersectionType": 1,
+        "IsRegular": true,
+        "IntersectionSubType": 1
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              116.62766007093974,
+              40.09236200814542,
+              0.0
+            ],
+            [
+              116.62773998635193,
+              40.092362264997256,
+              0.0
+            ],
+            [
+              116.62774032995084,
+              40.09229919871894,
+              0.0
+            ],
+            [
+              116.62766041461238,
+              40.092298941867675,
+              0.0
+            ],
+            [
+              116.62766007093974,
+              40.09236200814542,
+              0.0
+            ]
+          ]
+        ]
+      }
+    }
+  ]
+}

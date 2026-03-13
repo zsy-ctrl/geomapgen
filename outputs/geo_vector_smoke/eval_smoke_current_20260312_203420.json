@@ -1,0 +1,56 @@
+{
+  "split": "val",
+  "samples": 1,
+  "task_records": 2,
+  "parse_success_rate": 1.0,
+  "lane_metrics": {
+    "lane_f1_2m": 0.0,
+    "lane_gt_count": 1.0,
+    "lane_precision_2m": 0.0,
+    "lane_pred_count": 0.0,
+    "lane_property_exact_acc": 0.0,
+    "lane_recall_2m": 0.0,
+    "lane_unmatched_gt": 1.0,
+    "lane_unmatched_pred": 0.0,
+    "parse_ok_rate": 1.0
+  },
+  "intersection_metrics": {
+    "intersection_f1_iou30": 0.0,
+    "intersection_gt_count": 1.0,
+    "intersection_mean_iou": 0.0,
+    "intersection_precision_iou30": 0.0,
+    "intersection_pred_count": 1.0,
+    "intersection_property_exact_acc": 0.0,
+    "intersection_recall_iou30": 0.0,
+    "parse_ok_rate": 1.0
+  },
+  "sample_metrics": [
+    {
+      "lane_precision_2m": 0.0,
+      "lane_recall_2m": 0.0,
+      "lane_f1_2m": 0.0,
+      "lane_mean_hausdorff_m": Infinity,
+      "lane_mean_endpoint_error_m": Infinity,
+      "lane_property_exact_acc": 0.0,
+      "lane_pred_count": 0.0,
+      "lane_gt_count": 1.0,
+      "lane_unmatched_pred": 0.0,
+      "lane_unmatched_gt": 1.0,
+      "sample_id": "sample_val_0001",
+      "task_name": "lane",
+      "parse_ok_rate": 1.0
+    },
+    {
+      "intersection_precision_iou30": 0.0,
+      "intersection_recall_iou30": 0.0,
+      "intersection_f1_iou30": 0.0,
+      "intersection_mean_iou": 0.0,
+      "intersection_property_exact_acc": 0.0,
+      "intersection_pred_count": 1.0,
+      "intersection_gt_count": 1.0,
+      "sample_id": "sample_val_0001",
+      "task_name": "intersection",
+      "parse_ok_rate": 1.0
+    }
+  ]
+}

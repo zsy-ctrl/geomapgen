@@ -1,0 +1,4 @@
+command: C:\DevelopProject\VScode\UniMapGenStrongBaseline\unimapgen\train_geo_full.py --config configs/geo_vector_smoke_tiny.yaml
+seed: 42
+init_checkpoint: 
+llm_train_mode: full

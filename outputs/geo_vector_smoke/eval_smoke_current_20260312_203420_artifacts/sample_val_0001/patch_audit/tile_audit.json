@@ -1,0 +1,13 @@
+[
+  {
+    "sample_id": "sample_val_0001",
+    "image_path": "data/geo_vector_dataset_smoke\\val\\sample_val_0001\\patch_tif/0.tif",
+    "candidate_index": 0,
+    "selected": true,
+    "reason": "tiling_disabled",
+    "bbox": null,
+    "keep_bbox": null,
+    "mask_ratio": 0.0,
+    "mask_pixels": 0
+  }
+]

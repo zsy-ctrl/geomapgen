@@ -1,0 +1,195 @@
+seed: 42
+data:
+  dataset_root: data/geo_vector_dataset
+  train_split: train
+  val_split: val
+  test_split: test
+  image_relpath: patch_tif/0.tif
+  review_mask_relpath: patch_tif/0_edit_poly.tif
+  label_relpaths:
+    lane: label_check_crop/Lane.geojson
+    intersection: label_check_crop/Intersection.geojson
+  image_size: 448
+  band_indices:
+  - 1
+  - 2
+  - 3
+  mask_threshold: 127
+  crop_to_review_mask: true
+  train_crop_to_review_mask: true
+  val_crop_to_review_mask: false
+  review_crop_pad_px: 64
+  num_workers: 0
+  val_num_workers: 0
+  train_augment: true
+  aug_rot90_prob: 0.25
+  aug_hflip_prob: 0.25
+  aug_vflip_prob: 0.0
+  max_train_samples: null
+  max_val_samples: null
+  task_enable:
+    lane: true
+    intersection: true
+serialization:
+  max_seq_len: 1024
+  coord_num_bins: 448
+  sample_interval_meter: 1.0
+  tasks:
+    lane:
+      collection_name: Lane
+      geometry_type: linestring
+      max_features: 128
+      max_points_per_feature: 96
+      min_points_per_feature: 2
+      prompt_template: 'You are given a GeoTIFF image embedding. Generate the reviewed
+        Lane.geojson content using only the reserved vector tokens. Predict all lane
+        properties and the lane centerline geometry. Output at most {max_features}
+        lane features and at most {max_points_per_feature} points per lane.
+
+        '
+      fields:
+      - name: Id
+        type: string
+      - name: Length
+        type: int
+      - name: RoadId
+        type: string
+      - name: LaneType
+        type: int
+      - name: TurnType
+        type: int
+      - name: RoadIDSource
+        type: int
+      - name: TurnTypeSource
+        type: int
+      - name: LaneTypeSource
+        type: int
+      - name: IsThereStopLine
+        type: bool
+      - name: Width
+        type: float
+      - name: Source
+        type: int
+      - name: IsIntersectionInLane
+        type: bool
+      - name: IsIntersectionOutLane
+        type: bool
+      - name: IsThereRoadSplit
+        type: bool
+      - name: IsLeftmost
+        type: bool
+      - name: IsRightmost
+        type: bool
+    intersection:
+      collection_name: Intersection
+      geometry_type: polygon
+      max_features: 64
+      max_points_per_feature: 96
+      min_points_per_feature: 3
+      prompt_template: 'You are given a GeoTIFF image embedding. Generate the reviewed
+        Intersection.geojson content using only the reserved vector tokens. Predict
+        all intersection properties and the outer polygon geometry. Output at most
+        {max_features} intersection features and at most {max_points_per_feature}
+        points per polygon.
+
+        '
+      fields:
+      - name: Id
+        type: string
+      - name: IntersectionType
+        type: int
+      - name: IsRegular
+        type: bool
+        nullable: true
+      - name: IntersectionSubType
+        type: int
+model:
+  dino_model_path: ckpts/dinov2
+  qwen_model_path: ckpts/qwen
+  local_files_only: true
+  freeze_satellite: true
+  llm_train_mode: lora
+  sat_token_hw:
+  - 4
+  - 4
+  sat_patch_size: 14
+  sat_drop_cls_token: true
+  sat_normalize_input: true
+  gradient_checkpointing: false
+  semantic_init_new_tokens: true
+  lora:
+    r: 16
+    alpha: 32
+    dropout: 0.05
+    target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+    - gate_proj
+    - up_proj
+    - down_proj
+train:
+  base_output_dir: outputs/geo_vector_lora
+  output_dir: ''
+  run_name: ''
+  resume_in_place: false
+  init_checkpoint: ''
+  resume_optimizer: true
+  resume_scaler: true
+  batch_size: 1
+  val_batch_size: 1
+  epochs: 10
+  lr: 5.0e-05
+  weight_decay: 0.01
+  warmup_steps: 32
+  grad_clip_norm: 1.0
+  amp: false
+  save_latest: true
+decode:
+  max_new_tokens: 768
+  min_new_tokens: 16
+  temperature: 1.0
+  top_k: 1
+  repetition_penalty: 1.05
+  use_grammar_constraint: true
+  grammar_min_points_per_line: 2
+  grammar_max_lines: 128
+evaluation:
+  lane_match_distance_m: 2.0
+  intersection_iou_threshold: 0.3
+  review_mask_min_inside_ratio: 0.5
+tiling:
+  train:
+    enabled: true
+    tile_size_px: 2048
+    overlap_px: 256
+    keep_margin_px: 128
+    min_review_ratio: 0.002
+    min_review_pixels: 2048
+    search_within_review_bbox: true
+    allow_empty_tiles: true
+    max_tiles_per_sample: null
+  eval:
+    enabled: true
+    tile_size_px: 2048
+    overlap_px: 256
+    keep_margin_px: 128
+    min_review_ratio: 0.0
+    min_review_pixels: 0
+    search_within_review_bbox: false
+    allow_empty_tiles: true
+    max_tiles_per_sample: null
+  predict:
+    enabled: true
+    tile_size_px: 2048
+    overlap_px: 256
+    keep_margin_px: 128
+    min_review_ratio: 0.0
+    min_review_pixels: 0
+    search_within_review_bbox: false
+    allow_empty_tiles: true
+    max_tiles_per_sample: null
+postprocess:
+  line_dedup_distance_m: 1.0
+  polygon_dedup_iou: 0.5

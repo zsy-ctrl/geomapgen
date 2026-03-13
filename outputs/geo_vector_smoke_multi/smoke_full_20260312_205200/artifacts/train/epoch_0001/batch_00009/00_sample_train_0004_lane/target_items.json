@@ -1,0 +1,206 @@
+[
+  {
+    "geometry_type": "linestring",
+    "props_json": "{\"Id\":\"sample_train_0001_lane_1_lane_001\",\"IsIntersectionInLane\":true,\"IsIntersectionOutLane\":true,\"IsLeftmost\":true,\"IsRightmost\":true,\"IsThereRoadSplit\":false,\"IsThereStopLine\":false,\"LaneType\":14,\"LaneTypeSource\":32,\"Length\":1760,\"RoadIDSource\":0,\"RoadId\":\"sample_train_0001_road\",\"Source\":0,\"TurnType\":1,\"TurnTypeSource\":2,\"Width\":3.5}",
+    "points_uv": [
+      [
+        4.6875,
+        16.0546875
+      ],
+      [
+        7.632882118225098,
+        16.0546875
+      ],
+      [
+        10.578265190124512,
+        16.0546875
+      ],
+      [
+        13.52364730834961,
+        16.0546875
+      ],
+      [
+        16.46902847290039,
+        16.0546875
+      ],
+      [
+        19.414409637451172,
+        16.0546875
+      ],
+      [
+        22.35979461669922,
+        16.0546875
+      ],
+      [
+        25.30517578125,
+        16.0546875
+      ]
+    ],
+    "rings_uv": null,
+    "cut_in": "none",
+    "cut_out": "none",
+    "source": "local"
+  },
+  {
+    "geometry_type": "linestring",
+    "props_json": "{\"Id\":\"sample_train_0001_lane_1_lane_002\",\"IsIntersectionInLane\":true,\"IsIntersectionOutLane\":true,\"IsLeftmost\":true,\"IsRightmost\":true,\"IsThereRoadSplit\":false,\"IsThereStopLine\":false,\"LaneType\":14,\"LaneTypeSource\":32,\"Length\":1760,\"RoadIDSource\":0,\"RoadId\":\"sample_train_0001_road\",\"Source\":0,\"TurnType\":1,\"TurnTypeSource\":2,\"Width\":3.5}",
+    "points_uv": [
+      [
+        10.7666015625,
+        16.0546875
+      ],
+      [
+        13.481794357299805,
+        16.0546875
+      ],
+      [
+        16.19698715209961,
+        16.0546875
+      ],
+      [
+        18.91217803955078,
+        16.0546875
+      ],
+      [
+        21.62737274169922,
+        16.0546875
+      ],
+      [
+        24.34256362915039,
+        16.0546875
+      ]
+    ],
+    "rings_uv": null,
+    "cut_in": "none",
+    "cut_out": "none",
+    "source": "local"
+  },
+  {
+    "geometry_type": "linestring",
+    "props_json": "{\"Id\":\"sample_train_0001_lane_1_lane_003\",\"IsIntersectionInLane\":true,\"IsIntersectionOutLane\":true,\"IsLeftmost\":true,\"IsRightmost\":true,\"IsThereRoadSplit\":false,\"IsThereStopLine\":false,\"LaneType\":14,\"LaneTypeSource\":32,\"Length\":1760,\"RoadIDSource\":0,\"RoadId\":\"sample_train_0001_road\",\"Source\":0,\"TurnType\":1,\"TurnTypeSource\":2,\"Width\":3.5}",
+    "points_uv": [
+      [
+        16.88232421875,
+        16.0546875
+      ],
+      [
+        19.46044921875,
+        16.0546875
+      ],
+      [
+        22.03857421875,
+        16.0546875
+      ],
+      [
+        24.61669921875,
+        16.0546875
+      ]
+    ],
+    "rings_uv": null,
+    "cut_in": "none",
+    "cut_out": "none",
+    "source": "local"
+  },
+  {
+    "geometry_type": "linestring",
+    "props_json": "{\"Id\":\"sample_train_0001_lane_1_lane_004\",\"IsIntersectionInLane\":true,\"IsIntersectionOutLane\":true,\"IsLeftmost\":true,\"IsRightmost\":true,\"IsThereRoadSplit\":false,\"IsThereStopLine\":false,\"LaneType\":14,\"LaneTypeSource\":32,\"Length\":1760,\"RoadIDSource\":0,\"RoadId\":\"sample_train_0001_road\",\"Source\":0,\"TurnType\":1,\"TurnTypeSource\":2,\"Width\":3.5}",
+    "points_uv": [
+      [
+        4.6875,
+        20.15625
+      ],
+      [
+        7.632882118225098,
+        20.15625
+      ],
+      [
+        10.578265190124512,
+        20.156251907348633
+      ],
+      [
+        13.52364730834961,
+        20.15625
+      ],
+      [
+        16.46902847290039,
+        20.15625
+      ],
+      [
+        19.414409637451172,
+        20.15625
+      ],
+      [
+        22.35979461669922,
+        20.15625
+      ],
+      [
+        25.30517578125,
+        20.15625
+      ]
+    ],
+    "rings_uv": null,
+    "cut_in": "none",
+    "cut_out": "none",
+    "source": "local"
+  },
+  {
+    "geometry_type": "linestring",
+    "props_json": "{\"Id\":\"sample_train_0001_lane_1_lane_005\",\"IsIntersectionInLane\":true,\"IsIntersectionOutLane\":true,\"IsLeftmost\":true,\"IsRightmost\":true,\"IsThereRoadSplit\":false,\"IsThereStopLine\":false,\"LaneType\":14,\"LaneTypeSource\":32,\"Length\":1760,\"RoadIDSource\":0,\"RoadId\":\"sample_train_0001_road\",\"Source\":0,\"TurnType\":1,\"TurnTypeSource\":2,\"Width\":3.5}",
+    "points_uv": [
+      [
+        10.7666015625,
+        20.15625
+      ],
+      [
+        13.481794357299805,
+        20.15625
+      ],
+      [
+        16.19698715209961,
+        20.15625
+      ],
+      [
+        18.91217803955078,
+        20.15625
+      ],
+      [
+        21.62737274169922,
+        20.15625
+      ],
+      [
+        24.34256362915039,
+        20.15625
+      ]
+    ],
+    "rings_uv": null,
+    "cut_in": "none",
+    "cut_out": "none",
+    "source": "local"
+  },
+  {
+    "geometry_type": "linestring",
+    "props_json": "{\"Id\":\"sample_train_0001_lane_1_lane_006\",\"IsIntersectionInLane\":true,\"IsIntersectionOutLane\":true,\"IsLeftmost\":true,\"IsRightmost\":true,\"IsThereRoadSplit\":false,\"IsThereStopLine\":false,\"LaneType\":14,\"LaneTypeSource\":32,\"Length\":1760,\"RoadIDSource\":0,\"RoadId\":\"sample_train_0001_road\",\"Source\":0,\"TurnType\":1,\"TurnTypeSource\":2,\"Width\":3.5}",
+    "points_uv": [
+      [
+        16.88232421875,
+        20.15625
+      ],
+      [
+        19.46044921875,
+        20.15625
+      ],
+      [
+        22.03857421875,
+        20.15625
+      ],
+      [
+        24.61669921875,
+        20.15625
+      ]
+    ],
+    "rings_uv": null,
+    "cut_in": "none",
+    "cut_out": "none",
+    "source": "local"
+  }
+]

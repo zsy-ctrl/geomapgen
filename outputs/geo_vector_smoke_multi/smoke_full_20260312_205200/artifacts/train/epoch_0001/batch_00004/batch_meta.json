@@ -1,0 +1,10 @@
+{
+  "epoch": 1,
+  "batch_index": 4,
+  "sample_ids": [
+    "sample_train_0003"
+  ],
+  "task_names": [
+    "lane"
+  ]
+}

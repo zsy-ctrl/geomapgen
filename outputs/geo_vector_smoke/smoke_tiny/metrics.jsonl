@@ -1,0 +1,1 @@
+{"epoch": 1, "train_loss": 10.82573938369751, "val_loss": 10.82768201828003, "val_token_acc": 0.0, "train_sec": 0.1365978717803955, "global_step": 2, "best_updated": true, "output_dir": "outputs/geo_vector_smoke\\smoke_tiny"}

@@ -1,0 +1,5 @@
+command: C:\DevelopProject\VScode\UniMapGenStrongBaseline\unimapgen\train_geo_full.py --config c:\DevelopProject\VScode\UniMapGenStrongBaseline\configs\geo_vector_smoke_current.yaml
+seed: 42
+init_checkpoint: 
+llm_train_mode: full
+state_update_enabled: True

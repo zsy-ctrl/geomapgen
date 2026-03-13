@@ -1,0 +1,42 @@
+[
+  {
+    "stage": "eval",
+    "split": "val",
+    "sample_id": "sample_val_0001",
+    "sample_dir": "data/geo_vector_dataset_smoke_multi\\val\\sample_val_0001",
+    "image_path": "data/geo_vector_dataset_smoke_multi\\val\\sample_val_0001\\patch_tif/0.tif",
+    "crop_bbox": [
+      0,
+      0,
+      128,
+      128
+    ],
+    "candidate_index": 0,
+    "selected": true,
+    "reason": "tiling_disabled",
+    "bbox": null,
+    "keep_bbox": null,
+    "mask_ratio": 0.0,
+    "mask_pixels": 0
+  },
+  {
+    "stage": "eval",
+    "split": "val",
+    "sample_id": "sample_val_0002",
+    "sample_dir": "data/geo_vector_dataset_smoke_multi\\val\\sample_val_0002",
+    "image_path": "data/geo_vector_dataset_smoke_multi\\val\\sample_val_0002\\patch_tif/0.tif",
+    "crop_bbox": [
+      0,
+      0,
+      128,
+      128
+    ],
+    "candidate_index": 0,
+    "selected": true,
+    "reason": "tiling_disabled",
+    "bbox": null,
+    "keep_bbox": null,
+    "mask_ratio": 0.0,
+    "mask_pixels": 0
+  }
+]

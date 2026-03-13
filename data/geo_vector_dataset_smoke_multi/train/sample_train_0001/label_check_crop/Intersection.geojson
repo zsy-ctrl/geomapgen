@@ -1,0 +1,176 @@
+{
+  "type": "FeatureCollection",
+  "name": "Intersection",
+  "crs": {
+    "type": "name",
+    "properties": {
+      "name": "urn:ogc:def:crs:OGC:1.3:CRS84"
+    }
+  },
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "Id": "sample_train_0001_intersection_1_intersection_001",
+        "IntersectionType": 1,
+        "IsRegular": true,
+        "IntersectionSubType": 1
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              116.62765525624499,
+              40.092371002295,
+              0.0
+            ],
+            [
+              116.62773517166764,
+              40.09237125915021,
+              0.0
+            ],
+            [
+              116.6277355152711,
+              40.09230819287203,
+              0.0
+            ],
+            [
+              116.62765559992219,
+              40.0923079360174,
+              0.0
+            ],
+            [
+              116.62765525624499,
+              40.092371002295,
+              0.0
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "Id": "sample_train_0001_intersection_1_intersection_002",
+        "IntersectionType": 1,
+        "IsRegular": true,
+        "IntersectionSubType": 1
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              116.62771171025906,
+              40.092371183748895,
+              0.0
+            ],
+            [
+              116.62779162568245,
+              40.092371440565145,
+              0.0
+            ],
+            [
+              116.6277919692338,
+              40.09230837428658,
+              0.0
+            ],
+            [
+              116.62771205388415,
+              40.092308117470886,
+              0.0
+            ],
+            [
+              116.62771171025906,
+              40.092371183748895,
+              0.0
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "Id": "sample_train_0001_intersection_1_intersection_003",
+        "IntersectionType": 1,
+        "IsRegular": true,
+        "IntersectionSubType": 1
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              116.62776779768912,
+              40.092371363997266,
+              0.0
+            ],
+            [
+              116.62784074800743,
+              40.09237159839733,
+              0.0
+            ],
+            [
+              116.62784109151345,
+              40.0923085321184,
+              0.0
+            ],
+            [
+              116.62776814126245,
+              40.09230829771885,
+              0.0
+            ],
+            [
+              116.62776779768912,
+              40.092371363997266,
+              0.0
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "Id": "sample_train_0001_intersection_1_intersection_004",
+        "IntersectionType": 1,
+        "IsRegular": true,
+        "IntersectionSubType": 1
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              116.62765550172882,
+              40.09232595495393,
+              0.0
+            ],
+            [
+              116.6277354170988,
+              40.092326211808725,
+              0.0
+            ],
+            [
+              116.62773576070148,
+              40.09226314553006,
+              0.0
+            ],
+            [
+              116.62765584540526,
+              40.092262888675826,
+              0.0
+            ],
+            [
+              116.62765550172882,
+              40.09232595495393,
+              0.0
+            ]
+          ]
+        ]
+      }
+    }
+  ]
+}

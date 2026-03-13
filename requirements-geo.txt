@@ -1,0 +1,12 @@
+numpy
+Pillow
+PyYAML
+tqdm
+torch
+transformers
+accelerate
+peft
+rasterio
+pyproj
+shapely
+safetensors

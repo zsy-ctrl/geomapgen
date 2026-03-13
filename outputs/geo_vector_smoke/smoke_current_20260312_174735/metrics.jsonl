@@ -1,0 +1,1 @@
+{"epoch": 1, "train_loss": 10.827487468719482, "val_loss": 10.82747220993042, "val_token_acc": 0.0, "train_sec": 0.25562524795532227, "val_sec": 0.04590916633605957, "checkpoint_sec": 0.029002666473388672, "global_step": 2, "best_updated": true, "output_dir": "outputs/geo_vector_smoke\\smoke_current_20260312_174735"}
