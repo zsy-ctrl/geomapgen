@@ -61,6 +61,18 @@ class SampleSequentialBatchSampler(BatchSampler):
         return len(self._batches)
 
 
+def _count_sample_batches(items, batch_size: int) -> dict[str, int]:
+    counts: OrderedDict[str, int] = OrderedDict()
+    for item in items:
+        sample_id = str(item.get("sample_id", ""))
+        counts[sample_id] = int(counts.get(sample_id, 0)) + 1
+    out: dict[str, int] = {}
+    batch_size = max(1, int(batch_size))
+    for sample_id, item_count in counts.items():
+        out[sample_id] = max(1, (int(item_count) + batch_size - 1) // batch_size)
+    return out
+
+
 def _cfg_bool(value, default: bool = False) -> bool:
     if value is None:
         return bool(default)
@@ -278,6 +290,7 @@ def run_training(config_path: str, mode_override: str = "") -> None:
             f.write(f"init_checkpoint: {resume_checkpoint}\n")
             f.write(f"llm_train_mode: {cfg['model'].get('llm_train_mode', '')}\n")
             f.write(f"state_update_enabled: {bool(cfg.get('state_update', {}).get('enabled', True))}\n")
+            f.write(f"optimize_per_sample: {bool(train_cfg.get('optimize_per_sample', True))}\n")
     except Exception as exc:
         wrap_geo_error(
             code="GEO-1105",
@@ -340,6 +353,10 @@ def run_training(config_path: str, mode_override: str = "") -> None:
         train_cfg.get("val_sample_patch_sequential", sample_patch_sequential),
         default=sample_patch_sequential,
     )
+    optimize_per_sample = _cfg_bool(
+        train_cfg.get("optimize_per_sample", sample_patch_sequential),
+        default=sample_patch_sequential,
+    ) and bool(sample_patch_sequential)
     task_order = {name: idx for idx, name in enumerate(task_schemas.keys())}
     if sample_patch_sequential:
         train_loader = DataLoader(
@@ -427,7 +444,16 @@ def run_training(config_path: str, mode_override: str = "") -> None:
     global_step = int(resume_state["global_step"]) if resume_checkpoint else 0
     best_val = float(resume_state["best_val"]) if resume_state["best_val"] is not None else 1e9
     epochs = int(train_cfg["epochs"])
-    total_steps = max(1, epochs * max(1, len(train_loader)))
+    sample_batch_counts = _count_sample_batches(getattr(train_set, "items", []), batch_size=batch_size)
+    total_steps = max(
+        1,
+        epochs
+        * (
+            max(1, len(sample_batch_counts))
+            if optimize_per_sample
+            else max(1, len(train_loader))
+        ),
+    )
     metrics_path = os.path.join(out_dir, "metrics.jsonl")
 
     print(f"[Init] Train records={len(train_set)} Val records={len(val_set)}", flush=True)
@@ -483,7 +509,8 @@ def run_training(config_path: str, mode_override: str = "") -> None:
     print(f"[Init] State update cfg={cfg.get('state_update', {})}", flush=True)
     print(
         f"[Init] Train order sample_patch_sequential={sample_patch_sequential} "
-        f"val_sample_patch_sequential={val_sample_patch_sequential}",
+        f"val_sample_patch_sequential={val_sample_patch_sequential} "
+        f"optimize_per_sample={optimize_per_sample}",
         flush=True,
     )
 
@@ -500,7 +527,40 @@ def run_training(config_path: str, mode_override: str = "") -> None:
         exported_train_batches = 0
         t0 = time.time()
         pbar = tqdm(train_loader, desc=f"Epoch {epoch}/{epochs}")
+        if optimize_per_sample:
+            optimizer.zero_grad(set_to_none=True)
+        active_sample_id = None
+        active_sample_batch_total = 1
+        active_sample_batch_index = 0
+        active_sample_loss_sum = 0.0
+        active_sample_item_count = 0
+        current_lr = float(train_cfg["lr"])
         for batch_index, batch in enumerate(pbar):
+            batch_sample_id = str(batch["sample_ids"][0]) if batch.get("sample_ids") else f"batch_{batch_index}"
+            if optimize_per_sample:
+                if active_sample_id is None:
+                    active_sample_id = batch_sample_id
+                    active_sample_batch_total = max(1, int(sample_batch_counts.get(active_sample_id, 1)))
+                    active_sample_batch_index = 0
+                    active_sample_loss_sum = 0.0
+                    active_sample_item_count = 0
+                    current_lr = cosine_lr(
+                        global_step=global_step,
+                        total_steps=total_steps,
+                        base_lr=float(train_cfg["lr"]),
+                        warmup_steps=int(train_cfg.get("warmup_steps", 0)),
+                    )
+                    for group in optimizer.param_groups:
+                        group["lr"] = current_lr
+            else:
+                current_lr = cosine_lr(
+                    global_step=global_step,
+                    total_steps=total_steps,
+                    base_lr=float(train_cfg["lr"]),
+                    warmup_steps=int(train_cfg.get("warmup_steps", 0)),
+                )
+                for group in optimizer.param_groups:
+                    group["lr"] = current_lr
             if batch_index == 0:
                 prompt_lens = batch["prompt_attention_mask"].sum(dim=1).tolist()
                 state_lens = batch["state_attention_mask"].sum(dim=1).tolist()
@@ -521,16 +581,8 @@ def run_training(config_path: str, mode_override: str = "") -> None:
                         )
                     except Exception:
                         pass
-            lr = cosine_lr(
-                global_step=global_step,
-                total_steps=total_steps,
-                base_lr=float(train_cfg["lr"]),
-                warmup_steps=int(train_cfg.get("warmup_steps", 0)),
-            )
-            for group in optimizer.param_groups:
-                group["lr"] = lr
-
-            optimizer.zero_grad(set_to_none=True)
+            if not optimize_per_sample:
+                optimizer.zero_grad(set_to_none=True)
             with torch.amp.autocast("cuda", enabled=bool(train_cfg.get("amp", False)) and device.type == "cuda"):
                 out = model(
                     image=batch["image"].to(device),
@@ -544,12 +596,37 @@ def run_training(config_path: str, mode_override: str = "") -> None:
                     return_logits=False,
                 )
                 loss = out["loss"]
-            scaler.scale(loss).backward()
-            if float(train_cfg.get("grad_clip_norm", 0.0)) > 0:
-                scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(trainable_params, float(train_cfg["grad_clip_norm"]))
-            scaler.step(optimizer)
-            scaler.update()
+            raw_loss_value = float(loss.item())
+            backward_loss = loss
+            if optimize_per_sample:
+                backward_loss = loss / float(max(1, active_sample_batch_total))
+            scaler.scale(backward_loss).backward()
+            should_step = not optimize_per_sample
+            if optimize_per_sample:
+                active_sample_batch_index += 1
+                active_sample_loss_sum += raw_loss_value * batch["image"].shape[0]
+                active_sample_item_count += batch["image"].shape[0]
+                should_step = active_sample_batch_index >= active_sample_batch_total
+            if should_step:
+                if float(train_cfg.get("grad_clip_norm", 0.0)) > 0:
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(trainable_params, float(train_cfg["grad_clip_norm"]))
+                scaler.step(optimizer)
+                scaler.update()
+                optimizer.zero_grad(set_to_none=True)
+                global_step += 1
+                if optimize_per_sample and active_sample_id is not None:
+                    sample_loss = active_sample_loss_sum / max(active_sample_item_count, 1)
+                    print(
+                        f"[Epoch {epoch}] Sample done sample_id={active_sample_id} "
+                        f"patch_batches={active_sample_batch_total} sample_loss={sample_loss:.4f}",
+                        flush=True,
+                    )
+                    active_sample_id = None
+                    active_sample_batch_total = 1
+                    active_sample_batch_index = 0
+                    active_sample_loss_sum = 0.0
+                    active_sample_item_count = 0
             if device.type == "cuda" and batch_index == 0:
                 try:
                     alloc_gb = float(torch.cuda.memory_allocated(device)) / float(1024 ** 3)
@@ -564,10 +641,16 @@ def run_training(config_path: str, mode_override: str = "") -> None:
                 except Exception:
                     pass
 
-            ep_loss += float(loss.item()) * batch["image"].shape[0]
+            ep_loss += raw_loss_value * batch["image"].shape[0]
             ep_count += batch["image"].shape[0]
-            global_step += 1
-            pbar.set_postfix(loss=f"{float(loss.item()):.4f}", lr=f"{lr:.2e}")
+            postfix = {
+                "loss": f"{raw_loss_value:.4f}",
+                "lr": f"{current_lr:.2e}",
+            }
+            if optimize_per_sample:
+                postfix["sample"] = str(batch_sample_id)
+                postfix["sstep"] = f"{active_sample_batch_index}/{active_sample_batch_total}"
+            pbar.set_postfix(**postfix)
             if (
                 bool(artifact_cfg["enabled"])
                 and bool(artifact_cfg["save_train_batch_geojson"])

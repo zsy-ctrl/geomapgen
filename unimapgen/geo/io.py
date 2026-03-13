@@ -417,6 +417,17 @@ def geojson_dumps(obj: Dict) -> str:
         )
 
 
+def geojson_dumps_compact(obj: Dict) -> str:
+    try:
+        return json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
+    except Exception as exc:
+        wrap_geo_error(
+            code="GEO-1213",
+            message="failed to serialize compact GeoJSON text",
+            exc=exc,
+        )
+
+
 def extract_first_json_object(text: str) -> Optional[Dict]:
     decoder = json.JSONDecoder()
     raw = str(text or "")
@@ -429,4 +440,44 @@ def extract_first_json_object(text: str) -> Optional[Dict]:
                 return obj
         except json.JSONDecodeError:
             continue
+    return None
+
+
+def coerce_feature_collection(task_schema: TaskSchema, obj: Optional[Dict]) -> Optional[Dict]:
+    if not isinstance(obj, dict):
+        return None
+    if str(obj.get("type", "")).strip() == "FeatureCollection" and isinstance(obj.get("features"), list):
+        out = dict(obj)
+        out.setdefault("name", str(task_schema.collection_name))
+        out.setdefault(
+            "crs",
+            {
+                "type": "name",
+                "properties": {"name": DEFAULT_GEOJSON_CRS},
+            },
+        )
+        return out
+    if str(obj.get("type", "")).strip() == "Feature":
+        return {
+            "type": "FeatureCollection",
+            "name": str(task_schema.collection_name),
+            "crs": {
+                "type": "name",
+                "properties": {"name": DEFAULT_GEOJSON_CRS},
+            },
+            "features": [obj],
+        }
+    if isinstance(obj.get("features"), list):
+        return {
+            "type": "FeatureCollection",
+            "name": str(obj.get("name") or task_schema.collection_name),
+            "crs": obj.get(
+                "crs",
+                {
+                    "type": "name",
+                    "properties": {"name": DEFAULT_GEOJSON_CRS},
+                },
+            ),
+            "features": list(obj.get("features", [])),
+        }
     return None

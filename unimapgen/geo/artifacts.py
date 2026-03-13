@@ -11,9 +11,18 @@ from PIL import Image
 
 from unimapgen.utils import ensure_dir
 
-from .coord_sequence import uv_items_to_abs_feature_records
 from .geometry import ResizeContext, build_resize_context
-from .io import RasterMeta, geojson_dumps, pixel_features_to_geojson, read_raster_meta, read_rgb_geotiff, save_text
+from .io import (
+    RasterMeta,
+    coerce_feature_collection,
+    extract_first_json_object,
+    geojson_dumps,
+    geojson_to_pixel_features,
+    pixel_features_to_geojson,
+    read_raster_meta,
+    read_rgb_geotiff,
+    save_text,
+)
 
 
 def _as_bool(value, default: bool = False) -> bool:
@@ -208,13 +217,16 @@ def export_batch_geojson_snapshots(
                     image_size=int(cfg["data"]["image_size"]),
                 )
                 save_text(os.path.join(sample_out_dir, "prompt.txt"), str(batch["prompt_texts"][sample_index]))
+                save_text(os.path.join(sample_out_dir, "state.txt"), str(batch.get("state_texts", [""])[sample_index]))
+                save_text(os.path.join(sample_out_dir, "target.txt"), str(batch.get("target_texts", [""])[sample_index]))
                 save_json(os.path.join(sample_out_dir, "state_items.json"), batch["state_items_list"][sample_index])
                 save_json(os.path.join(sample_out_dir, "target_items.json"), batch["target_items_list"][sample_index])
 
-                gt_features_abs = uv_items_to_abs_feature_records(
-                    items=batch["target_items_list"][sample_index],
-                    task_schema=task_schema,
-                    resize_ctx=resize_ctx,
+                target_feature_records_list = batch.get("target_feature_records_list", [])
+                gt_features_abs = (
+                    target_feature_records_list[sample_index]
+                    if sample_index < len(target_feature_records_list)
+                    else []
                 )
                 save_geojson_snapshot(
                     path=os.path.join(sample_out_dir, f"{task_schema.collection_name}.gt.geojson"),
@@ -241,23 +253,24 @@ def export_batch_geojson_snapshots(
                             temperature=float(decode_cfg.get("temperature", 1.0)),
                             top_k=int(decode_cfg.get("top_k", 1)),
                             repetition_penalty=float(decode_cfg.get("repetition_penalty", 1.0)),
-                            grammar_helper=text_tokenizer.build_map_grammar_helper(
-                                task_schema=task_schema,
-                                max_prop_tokens=int(decode_cfg.get("max_prop_tokens", 128)),
-                            ),
+                            grammar_helper=None,
                             use_kv_cache=_as_bool(decode_cfg.get("use_kv_cache", True), default=True),
                             return_token_meta=False,
                         )
                 pred_token_ids = pred_ids[0].detach().cpu().tolist()
-                pred_items, decode_info = text_tokenizer.decode_map_items(
-                    token_ids=pred_token_ids,
+                pred_text = text_tokenizer.decode_text(pred_token_ids)
+                pred_geojson = coerce_feature_collection(
                     task_schema=task_schema,
-                    image_size=int(cfg["data"]["image_size"]),
+                    obj=extract_first_json_object(pred_text),
                 )
-                pred_features_abs = uv_items_to_abs_feature_records(
-                    items=pred_items,
-                    task_schema=task_schema,
-                    resize_ctx=resize_ctx,
+                pred_features_abs = (
+                    geojson_to_pixel_features(
+                        geojson_dict=pred_geojson,
+                        task_schema=task_schema,
+                        raster_meta=raster_meta,
+                    )
+                    if pred_geojson is not None
+                    else []
                 )
                 save_geojson_snapshot(
                     path=os.path.join(sample_out_dir, f"{task_schema.collection_name}.pred.geojson"),
@@ -268,9 +281,13 @@ def export_batch_geojson_snapshots(
                 save_json(
                     os.path.join(sample_out_dir, "prediction_debug.json"),
                     {
-                        "decode_info": decode_info,
+                        "decode_info": {
+                            "parsed_geojson": bool(pred_geojson is not None),
+                            "pred_feature_count": int(len(pred_features_abs)),
+                        },
                         "token_ids": [int(x) for x in pred_token_ids],
-                        "pred_item_count": int(len(pred_items)),
+                        "pred_text": pred_text,
+                        "pred_item_count": int(len(pred_features_abs)),
                     },
                 )
                 if device.type == "cuda":

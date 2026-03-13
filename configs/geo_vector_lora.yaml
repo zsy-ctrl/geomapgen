@@ -10,7 +10,7 @@ data:
   label_relpaths:
     lane: label_check_crop/Lane.geojson
     intersection: label_check_crop/Intersection.geojson
-  image_size: ${UNIMAPGEN_IMAGE_SIZE:-128}
+  image_size: ${UNIMAPGEN_IMAGE_SIZE:-256}
   band_indices: [1, 2, 3]
   mask_threshold: 127
   crop_to_review_mask: true
@@ -26,7 +26,7 @@ data:
   review_crop_pad_px: 64
   num_workers: 0
   val_num_workers: 0
-  train_augment: true
+  train_augment: false
   aug_rot90_prob: 0.25
   aug_hflip_prob: 0.25
   aug_vflip_prob: 0.0
@@ -46,35 +46,36 @@ serialization:
       max_features: ${UNIMAPGEN_LANE_MAX_FEATURES:-32}
       min_points_per_feature: 2
       prompt_template: >
-        Generate all lane instances present in the current patch as structured quantized coordinate tokens.
-        Do not assume a fixed lane count or a fixed property template from any example.
-        Learn lane property keys and values from the supervision GeoJSON and use cut-point aware local increments only.
-        If a lane was clipped by the review mask or by the patch crop, preserve the cut markers so the sequence is understood as a partial local lane.
+        Output patch-local lane text for the current patch.
+        Training examples may contain plain-text metadata lines such as PatchTargetMeta and CutFeature before the final GeoJSON object.
+        Learn lane field names, values, and multi-feature formatting from supervision. The final GeoJSON object must be a valid Lane FeatureCollection.
+        The features array may contain zero, one, or many lane Features. Do not assume a fixed lane count.
+        Do not explain anything. Do not use markdown.
     intersection:
       collection_name: Intersection
       geometry_type: polygon
       max_features: ${UNIMAPGEN_INTERSECTION_MAX_FEATURES:-16}
       min_points_per_feature: 3
       prompt_template: >
-        Generate all intersection polygons present in the current patch as structured quantized coordinate tokens.
-        Do not assume a fixed intersection count or a fixed property template from any example.
-        Learn intersection property keys and values from the supervision GeoJSON.
-        Output polygon boundary points in order; the final GeoJSON ring must be closed so the first and last coordinate are identical.
-        Use cut-point aware local increments only.
-        If an intersection polygon is clipped by the review mask or by the patch crop, preserve the internal cut markers so the sequence is understood as a partial local polygon.
+        Output patch-local intersection text for the current patch.
+        Training examples may contain plain-text metadata lines such as PatchTargetMeta and CutFeature before the final GeoJSON object.
+        Learn intersection field names, values, and multi-feature formatting from supervision. The final GeoJSON object must be a valid Intersection FeatureCollection.
+        The features array may contain zero, one, or many intersection Features. Do not assume a fixed intersection count.
+        Polygon coordinates must be valid GeoJSON rings and each ring must be closed, with identical first and last coordinates.
+        Do not explain anything. Do not use markdown.
 
 prompt:
   include_geospatial_context: ${UNIMAPGEN_PROMPT_INCLUDE_GEOSPATIAL_CONTEXT:-true}
   geospatial_precision: ${UNIMAPGEN_PROMPT_GEOSPATIAL_PRECISION:-3}
   with_state_suffix: >
-    Previous cut-point state anchors are provided below. Continue only the local increment needed for this patch.
+    Previous cut-point state anchors are provided below as plain-text StateAnchor lines and StateGeoJSON. Continue only the local increment needed for this patch.
   without_state_suffix: >
     No previous cut-point state anchors are available for this patch.
 
 text:
-  prompt_max_tokens: ${UNIMAPGEN_PROMPT_MAX_TOKENS:-96}
-  state_max_tokens: ${UNIMAPGEN_STATE_MAX_TOKENS:-192}
-  target_max_tokens: ${UNIMAPGEN_TARGET_MAX_TOKENS:-512}
+  prompt_max_tokens: ${UNIMAPGEN_PROMPT_MAX_TOKENS:-192}
+  state_max_tokens: ${UNIMAPGEN_STATE_MAX_TOKENS:-256}
+  target_max_tokens: ${UNIMAPGEN_TARGET_MAX_TOKENS:-1024}
 
 state_update:
   enabled: true
@@ -116,6 +117,7 @@ train:
   sample_patch_sequential: ${UNIMAPGEN_SAMPLE_PATCH_SEQUENTIAL:-true}
   val_sample_patch_sequential: ${UNIMAPGEN_VAL_SAMPLE_PATCH_SEQUENTIAL:-true}
   epochs: ${UNIMAPGEN_EPOCHS:-10}
+  optimize_per_sample: ${UNIMAPGEN_OPTIMIZE_PER_SAMPLE:-true}
   lr: ${UNIMAPGEN_LR:-0.00005}
   weight_decay: 0.01
   warmup_steps: 32

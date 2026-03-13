@@ -36,7 +36,8 @@ from .geometry import (
     select_tile_windows,
 )
 from .io import RasterMeta, geojson_to_pixel_features, load_geojson, read_binary_mask, read_raster_meta, read_rgb_geotiff
-from .prompting import build_task_prompt_text
+from .prompting import build_state_text, build_target_text, build_task_prompt_text
+from .io import geojson_dumps_compact, pixel_features_to_geojson
 from .schema import TaskSchema
 
 
@@ -230,6 +231,7 @@ class GeoVectorDataset(Dataset):
             anchor_max_points=int(self.cfg.state_anchor_max_points),
         )
         prompt_text = build_task_prompt_text(
+            task_name=item["task_name"],
             base_prompt=item["task_schema"].prompt_template,
             has_state=bool(self.cfg.state_enabled and state_items),
             with_state_suffix=self.cfg.prompt_with_state,
@@ -239,6 +241,26 @@ class GeoVectorDataset(Dataset):
             include_geospatial_context=bool(self.cfg.prompt_include_geospatial_context),
             geospatial_precision=int(self.cfg.prompt_geospatial_precision),
         )
+        state_geojson = pixel_features_to_geojson(
+            task_schema=item["task_schema"],
+            feature_records=self._feature_records_from_uv(state_features_uv, resize_ctx=resize_ctx),
+            raster_meta=raster_meta,
+        )
+        target_geojson = pixel_features_to_geojson(
+            task_schema=item["task_schema"],
+            feature_records=self._feature_records_from_uv(target_features_uv, resize_ctx=resize_ctx),
+            raster_meta=raster_meta,
+        )
+        state_text = build_state_text(
+            task_schema=item["task_schema"],
+            state_items=state_items,
+            geojson_text=geojson_dumps_compact(state_geojson),
+        )
+        target_text = build_target_text(
+            task_schema=item["task_schema"],
+            target_items=target_items,
+            geojson_text=geojson_dumps_compact(target_geojson),
+        )
 
         return {
             "image": torch.from_numpy(image_chw).float(),
@@ -246,8 +268,12 @@ class GeoVectorDataset(Dataset):
             "sample_dir": item["sample_dir"],
             "task_name": item["task_name"],
             "prompt_text": prompt_text,
+            "state_text": state_text,
+            "target_text": target_text,
             "state_items": state_items,
             "target_items": target_items,
+            "state_feature_records": self._clone_feature_records(self._feature_records_from_uv(state_features_uv, resize_ctx=resize_ctx)),
+            "target_feature_records": self._clone_feature_records(self._feature_records_from_uv(target_features_uv, resize_ctx=resize_ctx)),
             "raster_meta": raster_meta.to_dict(),
             "resize_ctx": resize_ctx.to_dict(),
             "review_mask_path": item["review_mask_path"],
@@ -417,6 +443,29 @@ class GeoVectorDataset(Dataset):
             record = {"properties": dict(feature.get("properties", {})), "points": points_uv.astype(np.float32)}
             if feature.get("rings"):
                 record["rings"] = rings_abs_to_uv(feature.get("rings", []), resize_ctx=resize_ctx)
+            if "cut_start" in feature:
+                record["cut_start"] = bool(feature.get("cut_start", False))
+            if "cut_end" in feature:
+                record["cut_end"] = bool(feature.get("cut_end", False))
+            if "clipped" in feature:
+                record["clipped"] = bool(feature.get("clipped", False))
+            out.append(record)
+        return out
+
+    def _feature_records_from_uv(self, feature_records: Sequence[Dict], resize_ctx) -> List[Dict]:
+        from .coord_sequence import points_uv_to_abs, rings_uv_to_abs
+
+        out: List[Dict] = []
+        for feature in feature_records:
+            record = {
+                "properties": dict(feature.get("properties", {})),
+                "points": points_uv_to_abs(
+                    points_uv=np.asarray(feature.get("points", []), dtype=np.float32),
+                    resize_ctx=resize_ctx,
+                ),
+            }
+            if feature.get("rings"):
+                record["rings"] = rings_uv_to_abs(feature.get("rings", []), resize_ctx=resize_ctx)
             if "cut_start" in feature:
                 record["cut_start"] = bool(feature.get("cut_start", False))
             if "cut_end" in feature:
@@ -1068,18 +1117,16 @@ class GeoVectorCollator:
             for b in batch
         ]
         state_ids = [
-            self.map_tokenizer.encode_state_items(
-                b["state_items"],
-                image_size=self.image_size,
+            self.map_tokenizer.encode_text(
+                b.get("state_text", ""),
                 max_length=self.state_max_tokens,
                 append_eos=True,
             )
             for b in batch
         ]
         target_ids = [
-            self.map_tokenizer.encode_map_items(
-                b["target_items"],
-                image_size=self.image_size,
+            self.map_tokenizer.encode_text(
+                b.get("target_text", ""),
                 max_length=self.target_max_tokens,
                 append_eos=True,
             )
@@ -1119,8 +1166,12 @@ class GeoVectorCollator:
             "sample_dirs": [b["sample_dir"] for b in batch],
             "task_names": [b["task_name"] for b in batch],
             "prompt_texts": [b["prompt_text"] for b in batch],
+            "state_texts": [b.get("state_text", "") for b in batch],
+            "target_texts": [b.get("target_text", "") for b in batch],
             "state_items_list": [b["state_items"] for b in batch],
             "target_items_list": [b["target_items"] for b in batch],
+            "state_feature_records_list": [b.get("state_feature_records", []) for b in batch],
+            "target_feature_records_list": [b.get("target_feature_records", []) for b in batch],
             "raster_metas": [b["raster_meta"] for b in batch],
             "resize_ctxs": [b["resize_ctx"] for b in batch],
             "review_mask_paths": [b["review_mask_path"] for b in batch],

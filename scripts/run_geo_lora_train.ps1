@@ -8,7 +8,7 @@ $Device = ""
 $OutputDir = ""
 $RunName = ""
 $InitCheckpoint = ""
-$ImageSize = "128"
+$ImageSize = "256"
 $TileSizePx = "768"
 $OverlapPx = "192"
 $KeepMarginPx = "96"
@@ -24,10 +24,11 @@ $ValBatchSize = "1"
 $SamplePatchSequential = "true"
 $ValSamplePatchSequential = "true"
 $Epochs = "10"
+$OptimizePerSample = "true"
 $LearningRate = ""
-$PromptMaxTokens = "96"
-$StateMaxTokens = "192"
-$TargetMaxTokens = "512"
+$PromptMaxTokens = "192"
+$StateMaxTokens = "256"
+$TargetMaxTokens = "1024"
 $MaxNewTokens = "0"
 $MinNewTokens = "0"
 $MaxPropTokens = "0"
@@ -89,6 +90,7 @@ Set-EnvIfValue "UNIMAPGEN_VAL_BATCH_SIZE" $ValBatchSize
 Set-EnvIfValue "UNIMAPGEN_SAMPLE_PATCH_SEQUENTIAL" $SamplePatchSequential
 Set-EnvIfValue "UNIMAPGEN_VAL_SAMPLE_PATCH_SEQUENTIAL" $ValSamplePatchSequential
 Set-EnvIfValue "UNIMAPGEN_EPOCHS" $Epochs
+Set-EnvIfValue "UNIMAPGEN_OPTIMIZE_PER_SAMPLE" $OptimizePerSample
 Set-EnvIfValue "UNIMAPGEN_LR" $LearningRate
 Set-EnvIfValue "UNIMAPGEN_PROMPT_MAX_TOKENS" $PromptMaxTokens
 Set-EnvIfValue "UNIMAPGEN_STATE_MAX_TOKENS" $StateMaxTokens

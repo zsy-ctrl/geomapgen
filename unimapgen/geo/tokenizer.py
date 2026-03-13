@@ -341,11 +341,7 @@ class GeoCoordTokenizer:
         return str(self.tokenizer.decode(ids, skip_special_tokens=True))
 
     def build_map_grammar_helper(self, task_schema: TaskSchema, max_prop_tokens: int = 128) -> GeoMapGrammarHelper:
-        return GeoMapGrammarHelper(
-            tokenizer=self,
-            task_schema=task_schema,
-            max_prop_tokens=int(max_prop_tokens),
-        )
+        return None
 
     def encode_state_items(
         self,
