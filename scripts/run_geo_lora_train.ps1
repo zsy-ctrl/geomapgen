@@ -2,6 +2,8 @@ $Config = "configs/geo_vector_lora.yaml"
 $DatasetRoot = ""
 $DinoModelPath = ""
 $QwenModelPath = ""
+$LlmTorchDtype = "float16"
+$AttnImplementation = "sdpa"
 $Device = ""
 $OutputDir = ""
 $RunName = ""
@@ -59,6 +61,8 @@ Set-Location $repoRoot
 Set-EnvIfValue "UNIMAPGEN_GEO_ROOT" $DatasetRoot
 Set-EnvIfValue "DINOV2_BACKBONE_PATH" $DinoModelPath
 Set-EnvIfValue "QWEN_MODEL_PATH" $QwenModelPath
+Set-EnvIfValue "UNIMAPGEN_LLM_TORCH_DTYPE" $LlmTorchDtype
+Set-EnvIfValue "UNIMAPGEN_ATTN_IMPLEMENTATION" $AttnImplementation
 Set-EnvIfValue "UNIMAPGEN_DEVICE" $Device
 Set-EnvIfValue "UNIMAPGEN_OUTPUT_DIR" $OutputDir
 Set-EnvIfValue "UNIMAPGEN_RUN_NAME" $RunName

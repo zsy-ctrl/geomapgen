@@ -179,19 +179,21 @@ def run_val(
     iterator = loader
     if desc:
         iterator = tqdm(loader, desc=desc, leave=False)
+    use_amp = bool((cfg or {}).get("train", {}).get("amp", False)) and device.type == "cuda"
     with torch.inference_mode():
         for batch_index, batch in enumerate(iterator):
-            out = model(
-                image=batch["image"].to(device),
-                prompt_input_ids=batch["prompt_input_ids"].to(device),
-                prompt_attention_mask=batch["prompt_attention_mask"].to(device),
-                pv_images=None,
-                state_input_ids=batch["state_input_ids"].to(device),
-                state_attention_mask=batch["state_attention_mask"].to(device),
-                map_input_ids=batch["map_input_ids"].to(device),
-                map_attention_mask=batch["map_attention_mask"].to(device),
-                return_logits=True,
-            )
+            with torch.amp.autocast("cuda", enabled=use_amp):
+                out = model(
+                    image=batch["image"].to(device),
+                    prompt_input_ids=batch["prompt_input_ids"].to(device),
+                    prompt_attention_mask=batch["prompt_attention_mask"].to(device),
+                    pv_images=None,
+                    state_input_ids=batch["state_input_ids"].to(device),
+                    state_attention_mask=batch["state_attention_mask"].to(device),
+                    map_input_ids=batch["map_input_ids"].to(device),
+                    map_attention_mask=batch["map_attention_mask"].to(device),
+                    return_logits=True,
+                )
             total_loss += float(out["loss"].item()) * batch["image"].shape[0]
             total_count += batch["image"].shape[0]
             correct, total = compute_shift_metrics(out["logits"], out["labels"])
@@ -321,6 +323,21 @@ def run_training(config_path: str, mode_override: str = "") -> None:
 
     device = select_torch_device(prefer_cuda=True)
     model.to(device)
+    llm_dtype = "unknown"
+    llm_param_dtype = "unknown"
+    sat_proj_dtype = "unknown"
+    try:
+        llm_dtype = str(getattr(model.llm, "dtype", "unknown"))
+    except Exception:
+        pass
+    try:
+        llm_param_dtype = str(next(model.llm.parameters()).dtype)
+    except Exception:
+        pass
+    try:
+        sat_proj_dtype = str(next(model.sat_proj.parameters()).dtype)
+    except Exception:
+        pass
     trainable_params = [param for param in model.parameters() if param.requires_grad]
     if not trainable_params:
         raise RuntimeError("No trainable parameters found for geo training.")
@@ -373,6 +390,12 @@ def run_training(config_path: str, mode_override: str = "") -> None:
             props = torch.cuda.get_device_properties(device)
             total_gb = float(props.total_memory) / float(1024 ** 3)
             print(f"[Init] GPU={props.name} total_vram_gb={total_gb:.1f}", flush=True)
+            allocated_gb = float(torch.cuda.memory_allocated(device)) / float(1024 ** 3)
+            reserved_gb = float(torch.cuda.memory_reserved(device)) / float(1024 ** 3)
+            print(
+                f"[Init] CUDA after model.to allocated_gb={allocated_gb:.2f} reserved_gb={reserved_gb:.2f}",
+                flush=True,
+            )
         except Exception:
             pass
     mem_risk = _estimate_memory_risk(cfg=cfg, batch_size=batch_size)
@@ -384,6 +407,10 @@ def run_training(config_path: str, mode_override: str = "") -> None:
     if mem_risk["suggestions"]:
         print(f"[Init] Memory suggestions={mem_risk['suggestions']}", flush=True)
     print(f"[Init] Tokenizer vocab={text_tokenizer.vocab_size}", flush=True)
+    print(
+        f"[Init] LLM dtype={llm_dtype} llm_param_dtype={llm_param_dtype} sat_proj_dtype={sat_proj_dtype}",
+        flush=True,
+    )
     print(f"[Init] Trainable params={model.trainable_parameter_summary()}", flush=True)
     print(f"[Init] Output dir={out_dir}", flush=True)
     print(f"[Init] State update cfg={cfg.get('state_update', {})}", flush=True)
@@ -391,6 +418,10 @@ def run_training(config_path: str, mode_override: str = "") -> None:
     for epoch in range(start_epoch, epochs + 1):
         if device.type == "cuda":
             torch.cuda.empty_cache()
+            try:
+                torch.cuda.reset_peak_memory_stats(device)
+            except Exception:
+                pass
         model.train()
         ep_loss = 0.0
         ep_count = 0
@@ -398,6 +429,26 @@ def run_training(config_path: str, mode_override: str = "") -> None:
         t0 = time.time()
         pbar = tqdm(train_loader, desc=f"Epoch {epoch}/{epochs}")
         for batch_index, batch in enumerate(pbar):
+            if batch_index == 0:
+                prompt_lens = batch["prompt_attention_mask"].sum(dim=1).tolist()
+                state_lens = batch["state_attention_mask"].sum(dim=1).tolist()
+                target_lens = batch["map_attention_mask"].sum(dim=1).tolist()
+                print(
+                    f"[Epoch {epoch}] Batch0 image_shape={tuple(batch['image'].shape)} "
+                    f"prompt_lens={prompt_lens} state_lens={state_lens} target_lens={target_lens}",
+                    flush=True,
+                )
+                if device.type == "cuda":
+                    try:
+                        alloc_gb = float(torch.cuda.memory_allocated(device)) / float(1024 ** 3)
+                        reserved_gb = float(torch.cuda.memory_reserved(device)) / float(1024 ** 3)
+                        print(
+                            f"[Epoch {epoch}] Batch0 preforward allocated_gb={alloc_gb:.2f} "
+                            f"reserved_gb={reserved_gb:.2f}",
+                            flush=True,
+                        )
+                    except Exception:
+                        pass
             lr = cosine_lr(
                 global_step=global_step,
                 total_steps=total_steps,
@@ -427,6 +478,19 @@ def run_training(config_path: str, mode_override: str = "") -> None:
                 torch.nn.utils.clip_grad_norm_(trainable_params, float(train_cfg["grad_clip_norm"]))
             scaler.step(optimizer)
             scaler.update()
+            if device.type == "cuda" and batch_index == 0:
+                try:
+                    alloc_gb = float(torch.cuda.memory_allocated(device)) / float(1024 ** 3)
+                    reserved_gb = float(torch.cuda.memory_reserved(device)) / float(1024 ** 3)
+                    peak_alloc_gb = float(torch.cuda.max_memory_allocated(device)) / float(1024 ** 3)
+                    peak_reserved_gb = float(torch.cuda.max_memory_reserved(device)) / float(1024 ** 3)
+                    print(
+                        f"[Epoch {epoch}] Batch0 CUDA allocated_gb={alloc_gb:.2f} reserved_gb={reserved_gb:.2f} "
+                        f"peak_alloc_gb={peak_alloc_gb:.2f} peak_reserved_gb={peak_reserved_gb:.2f}",
+                        flush=True,
+                    )
+                except Exception:
+                    pass
 
             ep_loss += float(loss.item()) * batch["image"].shape[0]
             ep_count += batch["image"].shape[0]

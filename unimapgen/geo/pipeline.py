@@ -174,6 +174,8 @@ def build_geo_components(cfg: Dict):
         sat_drop_cls_token=bool(model_cfg.get("sat_drop_cls_token", True)),
         sat_normalize_input=bool(model_cfg.get("sat_normalize_input", True)),
         gradient_checkpointing=bool(model_cfg.get("gradient_checkpointing", False)),
+        llm_torch_dtype=str(model_cfg.get("llm_torch_dtype", "float16")),
+        attn_implementation=str(model_cfg.get("attn_implementation", "sdpa")),
     )
     collator = GeoVectorCollator(
         map_tokenizer=text_tokenizer,

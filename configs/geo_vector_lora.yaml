@@ -82,6 +82,8 @@ model:
   dino_model_path: ${DINOV2_BACKBONE_PATH:-ckpts/dinov2}
   qwen_model_path: ${QWEN_MODEL_PATH:-ckpts/qwen}
   local_files_only: true
+  llm_torch_dtype: ${UNIMAPGEN_LLM_TORCH_DTYPE:-float16}
+  attn_implementation: ${UNIMAPGEN_ATTN_IMPLEMENTATION:-sdpa}
   freeze_satellite: true
   llm_train_mode: lora
   sat_token_hw: [2, 2]

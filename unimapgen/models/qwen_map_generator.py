@@ -60,6 +60,8 @@ class QwenSatelliteMapGenerator(nn.Module):
         pv_use_camera_embedding: bool = False,
         pv_max_camera_groups: int = 16,
         gradient_checkpointing: bool = False,
+        llm_torch_dtype: str = "float16",
+        attn_implementation: str = "sdpa",
     ) -> None:
         super().__init__()
         if AutoModelForCausalLM is None:
@@ -71,6 +73,7 @@ class QwenSatelliteMapGenerator(nn.Module):
         self.dino_model_path = resolve_hf_snapshot_path(dino_model_path)
         self.qwen_model_path = resolve_hf_snapshot_path(qwen_model_path)
         self.llm_train_mode = str(llm_train_mode).strip().lower()
+        llm_dtype = self._resolve_torch_dtype(llm_torch_dtype)
         print(f"[Init] Satellite backbone path: {self.dino_model_path}", flush=True)
         self.sat_encoder = SatelliteEncoder(
             model_name=self.dino_model_path,
@@ -86,8 +89,11 @@ class QwenSatelliteMapGenerator(nn.Module):
         llm_load_kwargs = dict(
             local_files_only=bool(local_files_only),
             trust_remote_code=True,
-            torch_dtype="auto",
+            torch_dtype=llm_dtype,
         )
+        attn_impl = str(attn_implementation or "").strip().lower()
+        if attn_impl:
+            llm_load_kwargs["attn_implementation"] = attn_impl
         try:
             self.llm = AutoModelForCausalLM.from_pretrained(
                 self.qwen_model_path,
@@ -101,7 +107,7 @@ class QwenSatelliteMapGenerator(nn.Module):
             )
         print(
             f"[Init] Qwen LLM loaded in {time.time() - llm_load_start:.1f}s "
-            f"(dtype={getattr(self.llm, 'dtype', 'unknown')})",
+            f"(dtype={getattr(self.llm, 'dtype', 'unknown')} attn={attn_impl or 'default'})",
             flush=True,
         )
         self.llm.resize_token_embeddings(int(vocab_size))
@@ -133,6 +139,10 @@ class QwenSatelliteMapGenerator(nn.Module):
         if bool(freeze_satellite):
             for p in self.sat_encoder.parameters():
                 p.requires_grad = False
+            try:
+                self.sat_encoder.to(dtype=self.llm.dtype)
+            except Exception:
+                pass
         if bool(freeze_llm):
             self.llm_train_mode = "freeze"
 
@@ -176,6 +186,19 @@ class QwenSatelliteMapGenerator(nn.Module):
             self._llm_forward_arg_names = set(inspect.signature(self.llm.forward).parameters.keys())
         except Exception:
             self._llm_forward_arg_names = set()
+
+    @staticmethod
+    def _resolve_torch_dtype(value: str):
+        text = str(value or "").strip().lower()
+        if text in {"float16", "fp16", "half"}:
+            return torch.float16
+        if text in {"bfloat16", "bf16"}:
+            return torch.bfloat16
+        if text in {"float32", "fp32"}:
+            return torch.float32
+        if text in {"auto", ""}:
+            return "auto"
+        raise RuntimeError(f"Unsupported llm_torch_dtype: {value}")
 
     @torch.no_grad()
     def semantic_initialize_new_embeddings(self, qwen_map_tokenizer) -> Dict[str, int]:
