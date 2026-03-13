@@ -165,21 +165,21 @@ def export_batch_geojson_snapshots(
     stage: str,
     epoch: int,
     batch_index: int,
-) -> None:
+) -> list[dict]:
     artifact_cfg = get_artifact_export_cfg(cfg)
     if not bool(artifact_cfg["enabled"]):
-        return
+        return []
     if stage == "train" and not bool(artifact_cfg["save_train_batch_geojson"]):
-        return
+        return []
     if stage == "val" and not bool(artifact_cfg["save_val_batch_geojson"]):
-        return
+        return []
 
     save_inputs = bool(artifact_cfg["save_train_batch_inputs"]) if stage == "train" else bool(artifact_cfg["save_val_batch_inputs"])
     save_predictions = bool(artifact_cfg["save_train_batch_predictions"]) if stage == "train" else bool(artifact_cfg["save_val_batch_predictions"])
 
     max_samples = max(0, int(artifact_cfg["max_samples_per_batch"]))
     if max_samples == 0:
-        return
+        return []
 
     stage_out_dir = os.path.join(output_dir, "artifacts", stage, f"epoch_{int(epoch):04d}", f"batch_{int(batch_index):05d}")
     ensure_dir(stage_out_dir)
@@ -195,6 +195,7 @@ def export_batch_geojson_snapshots(
 
     was_training = bool(model.training)
     model.eval()
+    exported_prediction_records: list[dict] = []
     try:
         for sample_index in range(min(int(max_samples), len(batch.get("sample_ids", [])))):
             sample_id = str(batch["sample_ids"][sample_index])
@@ -219,6 +220,10 @@ def export_batch_geojson_snapshots(
                 save_text(os.path.join(sample_out_dir, "prompt.txt"), str(batch["prompt_texts"][sample_index]))
                 save_text(os.path.join(sample_out_dir, "state.txt"), str(batch.get("state_texts", [""])[sample_index]))
                 save_text(os.path.join(sample_out_dir, "target.txt"), str(batch.get("target_texts", [""])[sample_index]))
+                save_text(
+                    os.path.join(sample_out_dir, "target_meta.txt"),
+                    str(batch.get("target_meta_texts", [""])[sample_index]),
+                )
                 save_json(os.path.join(sample_out_dir, "state_items.json"), batch["state_items_list"][sample_index])
                 save_json(os.path.join(sample_out_dir, "target_items.json"), batch["target_items_list"][sample_index])
 
@@ -272,12 +277,33 @@ def export_batch_geojson_snapshots(
                     if pred_geojson is not None
                     else []
                 )
-                save_geojson_snapshot(
-                    path=os.path.join(sample_out_dir, f"{task_schema.collection_name}.pred.geojson"),
-                    task_schema=task_schema,
-                    feature_records=pred_features_abs,
-                    raster_meta=raster_meta,
-                )
+                save_text(os.path.join(sample_out_dir, f"{task_schema.collection_name}.pred.raw.txt"), pred_text)
+                if pred_geojson is not None:
+                    save_geojson_snapshot(
+                        path=os.path.join(sample_out_dir, f"{task_schema.collection_name}.pred.geojson"),
+                        task_schema=task_schema,
+                        feature_records=pred_features_abs,
+                        raster_meta=raster_meta,
+                    )
+                    exported_prediction_records.append(
+                        {
+                            "sample_id": sample_id,
+                            "task_name": task_name,
+                            "tile_index": int(batch["tile_indices"][sample_index]),
+                            "crop_bbox": batch["crop_bboxes"][sample_index],
+                            "raster_meta": raster_meta,
+                            "feature_records": pred_features_abs,
+                        }
+                    )
+                else:
+                    save_json(
+                        os.path.join(sample_out_dir, f"{task_schema.collection_name}.pred.parse_failed.json"),
+                        {
+                            "parsed_geojson": False,
+                            "pred_feature_count": int(len(pred_features_abs)),
+                            "pred_text": pred_text,
+                        },
+                    )
                 save_json(
                     os.path.join(sample_out_dir, "prediction_debug.json"),
                     {
@@ -295,6 +321,7 @@ def export_batch_geojson_snapshots(
     finally:
         if was_training:
             model.train()
+    return exported_prediction_records
 
 
 def export_prediction_tile_geojsons(
@@ -336,6 +363,11 @@ def export_prediction_tile_geojsons(
             tile_index = int(tile_record.get("tile_index", 0))
             pred_geojson = tile_record.get("pred_geojson")
             kept_geojson = tile_record.get("kept_geojson")
+            pred_text = str(tile_record.get("pred_text", ""))
+            save_text(
+                os.path.join(task_out_dir, f"tile_{tile_index:04d}.pred.raw.txt"),
+                pred_text,
+            )
             if isinstance(pred_geojson, dict):
                 save_text(
                     os.path.join(task_out_dir, f"tile_{tile_index:04d}.pred.geojson"),

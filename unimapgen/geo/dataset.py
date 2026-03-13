@@ -256,11 +256,12 @@ class GeoVectorDataset(Dataset):
             state_items=state_items,
             geojson_text=geojson_dumps_compact(state_geojson),
         )
-        target_text = build_target_text(
+        target_meta_text = build_target_text(
             task_schema=item["task_schema"],
             target_items=target_items,
             geojson_text=geojson_dumps_compact(target_geojson),
         )
+        target_text = geojson_dumps_compact(target_geojson)
 
         return {
             "image": torch.from_numpy(image_chw).float(),
@@ -270,6 +271,7 @@ class GeoVectorDataset(Dataset):
             "prompt_text": prompt_text,
             "state_text": state_text,
             "target_text": target_text,
+            "target_meta_text": target_meta_text,
             "state_items": state_items,
             "target_items": target_items,
             "state_feature_records": self._clone_feature_records(self._feature_records_from_uv(state_features_uv, resize_ctx=resize_ctx)),
@@ -1168,6 +1170,7 @@ class GeoVectorCollator:
             "prompt_texts": [b["prompt_text"] for b in batch],
             "state_texts": [b.get("state_text", "") for b in batch],
             "target_texts": [b.get("target_text", "") for b in batch],
+            "target_meta_texts": [b.get("target_meta_text", "") for b in batch],
             "state_items_list": [b["state_items"] for b in batch],
             "target_items_list": [b["target_items"] for b in batch],
             "state_feature_records_list": [b.get("state_feature_records", []) for b in batch],

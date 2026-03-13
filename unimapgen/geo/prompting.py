@@ -95,6 +95,10 @@ def build_task_prompt_text(
     elif task_key == "intersection":
         parts.append(_INTERSECTION_EXAMPLE)
     parts.append(str(base_prompt).strip())
+    parts.append(
+        "Output only the final GeoJSON FeatureCollection text. "
+        "Do not output StateAnchorMeta, PatchTargetMeta, CutFeature, commentary, or markdown."
+    )
     suffix = str(with_state_suffix if has_state else without_state_suffix).strip()
     if suffix:
         parts.append(suffix)

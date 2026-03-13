@@ -7,15 +7,18 @@ from collections import OrderedDict
 
 import torch
 import yaml
-from torch.utils.data import BatchSampler, DataLoader
+from torch.utils.data import BatchSampler, DataLoader, Subset
 from tqdm import tqdm
 
 from unimapgen.geo.artifacts import (
     export_batch_geojson_snapshots,
     export_tile_audit_records,
     get_artifact_export_cfg,
+    save_geojson_snapshot,
+    save_json,
 )
 from unimapgen.geo.errors import run_with_geo_error_boundary, wrap_geo_error
+from unimapgen.geo.metrics import deduplicate_feature_records
 from unimapgen.geo.pipeline import (
     atomic_torch_save,
     build_checkpoint_obj,
@@ -71,6 +74,37 @@ def _count_sample_batches(items, batch_size: int) -> dict[str, int]:
     for sample_id, item_count in counts.items():
         out[sample_id] = max(1, (int(item_count) + batch_size - 1) // batch_size)
     return out
+
+
+def _group_sample_indices(items, task_order: dict[str, int]) -> OrderedDict[str, list[int]]:
+    grouped: OrderedDict[str, list[tuple[int, dict]]] = OrderedDict()
+    for index, item in enumerate(items):
+        sample_id = str(item.get("sample_id", ""))
+        grouped.setdefault(sample_id, []).append((int(index), item))
+    ordered: OrderedDict[str, list[int]] = OrderedDict()
+    for sample_id, entries in grouped.items():
+        entries.sort(
+            key=lambda pair: (
+                int(pair[1].get("tile_index", 0)),
+                int(task_order.get(str(pair[1].get("task_name", "")), 10**6)),
+                int(pair[0]),
+            )
+        )
+        ordered[sample_id] = [int(index) for index, _ in entries]
+    return ordered
+
+
+def _build_subset_loader(dataset, indices: list[int], batch_size: int, num_workers: int, collate_fn):
+    subset = Subset(dataset, indices)
+    return DataLoader(
+        subset,
+        batch_size=max(1, int(batch_size)),
+        shuffle=False,
+        num_workers=int(num_workers),
+        pin_memory=True,
+        persistent_workers=bool(int(num_workers) > 0),
+        collate_fn=collate_fn,
+    )
 
 
 def _cfg_bool(value, default: bool = False) -> bool:
@@ -358,29 +392,9 @@ def run_training(config_path: str, mode_override: str = "") -> None:
         default=sample_patch_sequential,
     ) and bool(sample_patch_sequential)
     task_order = {name: idx for idx, name in enumerate(task_schemas.keys())}
-    if sample_patch_sequential:
-        train_loader = DataLoader(
-            train_set,
-            batch_sampler=SampleSequentialBatchSampler(
-                items=getattr(train_set, "items", []),
-                batch_size=batch_size,
-                task_order=task_order,
-            ),
-            num_workers=num_workers,
-            pin_memory=True,
-            persistent_workers=bool(num_workers > 0),
-            collate_fn=collator,
-        )
-    else:
-        train_loader = DataLoader(
-            train_set,
-            batch_size=batch_size,
-            shuffle=True,
-            num_workers=num_workers,
-            pin_memory=True,
-            persistent_workers=bool(num_workers > 0),
-            collate_fn=collator,
-        )
+    epoch_is_single_sample = _cfg_bool(train_cfg.get("epoch_is_single_sample", True), default=True)
+    sample_to_indices = _group_sample_indices(getattr(train_set, "items", []), task_order=task_order)
+    sample_ids_in_order = list(sample_to_indices.keys())
     if val_sample_patch_sequential:
         val_loader = DataLoader(
             val_set,
@@ -445,15 +459,42 @@ def run_training(config_path: str, mode_override: str = "") -> None:
     best_val = float(resume_state["best_val"]) if resume_state["best_val"] is not None else 1e9
     epochs = int(train_cfg["epochs"])
     sample_batch_counts = _count_sample_batches(getattr(train_set, "items", []), batch_size=batch_size)
-    total_steps = max(
-        1,
-        epochs
-        * (
-            max(1, len(sample_batch_counts))
-            if optimize_per_sample
-            else max(1, len(train_loader))
-        ),
-    )
+    if epoch_is_single_sample and sample_ids_in_order:
+        total_steps = 0
+        for epoch_id in range(1, epochs + 1):
+            sample_id = sample_ids_in_order[(epoch_id - 1) % len(sample_ids_in_order)]
+            total_steps += int(sample_batch_counts.get(sample_id, 1))
+        total_steps = max(1, total_steps)
+    else:
+        full_train_loader = DataLoader(
+            train_set,
+            batch_sampler=SampleSequentialBatchSampler(
+                items=getattr(train_set, "items", []),
+                batch_size=batch_size,
+                task_order=task_order,
+            ),
+            num_workers=num_workers,
+            pin_memory=True,
+            persistent_workers=bool(num_workers > 0),
+            collate_fn=collator,
+        ) if sample_patch_sequential else DataLoader(
+            train_set,
+            batch_size=batch_size,
+            shuffle=True,
+            num_workers=num_workers,
+            pin_memory=True,
+            persistent_workers=bool(num_workers > 0),
+            collate_fn=collator,
+        )
+        total_steps = max(
+            1,
+            epochs
+            * (
+                max(1, len(sample_batch_counts))
+                if optimize_per_sample
+                else max(1, len(full_train_loader))
+            ),
+        )
     metrics_path = os.path.join(out_dir, "metrics.jsonl")
 
     print(f"[Init] Train records={len(train_set)} Val records={len(val_set)}", flush=True)
@@ -492,6 +533,9 @@ def run_training(config_path: str, mode_override: str = "") -> None:
         except Exception:
             pass
     mem_risk = _estimate_memory_risk(cfg=cfg, batch_size=batch_size)
+    if epoch_is_single_sample and optimize_per_sample:
+        print("[Init] epoch_is_single_sample=true forces optimize_per_sample=false for patch-level optimizer steps.", flush=True)
+        optimize_per_sample = False
     print(
         f"[Init] Memory risk level={mem_risk['level']} score={mem_risk['score']} "
         f"mode={mem_risk['llm_mode']} reasons={mem_risk['reasons']}",
@@ -510,7 +554,12 @@ def run_training(config_path: str, mode_override: str = "") -> None:
     print(
         f"[Init] Train order sample_patch_sequential={sample_patch_sequential} "
         f"val_sample_patch_sequential={val_sample_patch_sequential} "
-        f"optimize_per_sample={optimize_per_sample}",
+        f"optimize_per_sample={optimize_per_sample} "
+        f"epoch_is_single_sample={epoch_is_single_sample}",
+        flush=True,
+    )
+    print(
+        f"[Init] Train samples={len(sample_ids_in_order)} sample_ids_preview={sample_ids_in_order[:5]}",
         flush=True,
     )
 
@@ -526,41 +575,58 @@ def run_training(config_path: str, mode_override: str = "") -> None:
         ep_count = 0
         exported_train_batches = 0
         t0 = time.time()
+        current_sample_id = ""
+        if epoch_is_single_sample:
+            if not sample_ids_in_order:
+                raise RuntimeError("No train samples available for sample-epoch training.")
+            current_sample_id = sample_ids_in_order[(epoch - 1) % len(sample_ids_in_order)]
+            current_indices = sample_to_indices.get(current_sample_id, [])
+            train_loader = _build_subset_loader(
+                dataset=train_set,
+                indices=current_indices,
+                batch_size=batch_size,
+                num_workers=num_workers,
+                collate_fn=collator,
+            )
+            print(
+                f"[Epoch {epoch}] Training sample_id={current_sample_id} patch_batches={len(train_loader)}",
+                flush=True,
+            )
+        else:
+            train_loader = DataLoader(
+                train_set,
+                batch_sampler=SampleSequentialBatchSampler(
+                    items=getattr(train_set, "items", []),
+                    batch_size=batch_size,
+                    task_order=task_order,
+                ),
+                num_workers=num_workers,
+                pin_memory=True,
+                persistent_workers=bool(num_workers > 0),
+                collate_fn=collator,
+            ) if sample_patch_sequential else DataLoader(
+                train_set,
+                batch_size=batch_size,
+                shuffle=True,
+                num_workers=num_workers,
+                pin_memory=True,
+                persistent_workers=bool(num_workers > 0),
+                collate_fn=collator,
+            )
         pbar = tqdm(train_loader, desc=f"Epoch {epoch}/{epochs}")
-        if optimize_per_sample:
-            optimizer.zero_grad(set_to_none=True)
-        active_sample_id = None
-        active_sample_batch_total = 1
-        active_sample_batch_index = 0
-        active_sample_loss_sum = 0.0
-        active_sample_item_count = 0
         current_lr = float(train_cfg["lr"])
+        epoch_pred_features: dict[str, list[dict]] = {name: [] for name in task_schemas.keys()}
+        epoch_raster_meta = None
         for batch_index, batch in enumerate(pbar):
             batch_sample_id = str(batch["sample_ids"][0]) if batch.get("sample_ids") else f"batch_{batch_index}"
-            if optimize_per_sample:
-                if active_sample_id is None:
-                    active_sample_id = batch_sample_id
-                    active_sample_batch_total = max(1, int(sample_batch_counts.get(active_sample_id, 1)))
-                    active_sample_batch_index = 0
-                    active_sample_loss_sum = 0.0
-                    active_sample_item_count = 0
-                    current_lr = cosine_lr(
-                        global_step=global_step,
-                        total_steps=total_steps,
-                        base_lr=float(train_cfg["lr"]),
-                        warmup_steps=int(train_cfg.get("warmup_steps", 0)),
-                    )
-                    for group in optimizer.param_groups:
-                        group["lr"] = current_lr
-            else:
-                current_lr = cosine_lr(
-                    global_step=global_step,
-                    total_steps=total_steps,
-                    base_lr=float(train_cfg["lr"]),
-                    warmup_steps=int(train_cfg.get("warmup_steps", 0)),
-                )
-                for group in optimizer.param_groups:
-                    group["lr"] = current_lr
+            current_lr = cosine_lr(
+                global_step=global_step,
+                total_steps=total_steps,
+                base_lr=float(train_cfg["lr"]),
+                warmup_steps=int(train_cfg.get("warmup_steps", 0)),
+            )
+            for group in optimizer.param_groups:
+                group["lr"] = current_lr
             if batch_index == 0:
                 prompt_lens = batch["prompt_attention_mask"].sum(dim=1).tolist()
                 state_lens = batch["state_attention_mask"].sum(dim=1).tolist()
@@ -581,8 +647,7 @@ def run_training(config_path: str, mode_override: str = "") -> None:
                         )
                     except Exception:
                         pass
-            if not optimize_per_sample:
-                optimizer.zero_grad(set_to_none=True)
+            optimizer.zero_grad(set_to_none=True)
             with torch.amp.autocast("cuda", enabled=bool(train_cfg.get("amp", False)) and device.type == "cuda"):
                 out = model(
                     image=batch["image"].to(device),
@@ -597,36 +662,13 @@ def run_training(config_path: str, mode_override: str = "") -> None:
                 )
                 loss = out["loss"]
             raw_loss_value = float(loss.item())
-            backward_loss = loss
-            if optimize_per_sample:
-                backward_loss = loss / float(max(1, active_sample_batch_total))
-            scaler.scale(backward_loss).backward()
-            should_step = not optimize_per_sample
-            if optimize_per_sample:
-                active_sample_batch_index += 1
-                active_sample_loss_sum += raw_loss_value * batch["image"].shape[0]
-                active_sample_item_count += batch["image"].shape[0]
-                should_step = active_sample_batch_index >= active_sample_batch_total
-            if should_step:
-                if float(train_cfg.get("grad_clip_norm", 0.0)) > 0:
-                    scaler.unscale_(optimizer)
-                    torch.nn.utils.clip_grad_norm_(trainable_params, float(train_cfg["grad_clip_norm"]))
-                scaler.step(optimizer)
-                scaler.update()
-                optimizer.zero_grad(set_to_none=True)
-                global_step += 1
-                if optimize_per_sample and active_sample_id is not None:
-                    sample_loss = active_sample_loss_sum / max(active_sample_item_count, 1)
-                    print(
-                        f"[Epoch {epoch}] Sample done sample_id={active_sample_id} "
-                        f"patch_batches={active_sample_batch_total} sample_loss={sample_loss:.4f}",
-                        flush=True,
-                    )
-                    active_sample_id = None
-                    active_sample_batch_total = 1
-                    active_sample_batch_index = 0
-                    active_sample_loss_sum = 0.0
-                    active_sample_item_count = 0
+            scaler.scale(loss).backward()
+            if float(train_cfg.get("grad_clip_norm", 0.0)) > 0:
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(trainable_params, float(train_cfg["grad_clip_norm"]))
+            scaler.step(optimizer)
+            scaler.update()
+            global_step += 1
             if device.type == "cuda" and batch_index == 0:
                 try:
                     alloc_gb = float(torch.cuda.memory_allocated(device)) / float(1024 ** 3)
@@ -646,17 +688,12 @@ def run_training(config_path: str, mode_override: str = "") -> None:
             postfix = {
                 "loss": f"{raw_loss_value:.4f}",
                 "lr": f"{current_lr:.2e}",
+                "sample": str(batch_sample_id),
+                "tile": f"{int(batch['tile_indices'][0]) + 1}/{int(batch['tile_counts'][0])}",
             }
-            if optimize_per_sample:
-                postfix["sample"] = str(batch_sample_id)
-                postfix["sstep"] = f"{active_sample_batch_index}/{active_sample_batch_total}"
             pbar.set_postfix(**postfix)
-            if (
-                bool(artifact_cfg["enabled"])
-                and bool(artifact_cfg["save_train_batch_geojson"])
-                and exported_train_batches < max(0, int(artifact_cfg["max_batches_per_epoch"]))
-            ):
-                export_batch_geojson_snapshots(
+            if bool(artifact_cfg["enabled"]) and bool(artifact_cfg["save_train_batch_geojson"]):
+                exported = export_batch_geojson_snapshots(
                     cfg=cfg,
                     task_schemas=task_schemas,
                     text_tokenizer=text_tokenizer,
@@ -670,9 +707,40 @@ def run_training(config_path: str, mode_override: str = "") -> None:
                     batch_index=int(batch_index),
                 )
                 exported_train_batches += 1
+                for record in exported:
+                    epoch_raster_meta = record.get("raster_meta", epoch_raster_meta)
+                    epoch_pred_features.setdefault(str(record["task_name"]), []).extend(record.get("feature_records", []))
 
         train_loss = ep_loss / max(ep_count, 1)
         train_sec = time.time() - t0
+        if epoch_is_single_sample and current_sample_id and epoch_raster_meta is not None:
+            stitched_out_dir = os.path.join(out_dir, "artifacts", "train", f"epoch_{int(epoch):04d}", f"sample_{current_sample_id}_stitched")
+            os.makedirs(stitched_out_dir, exist_ok=True)
+            stitched_summary = {
+                "sample_id": current_sample_id,
+                "epoch": int(epoch),
+                "tasks": {},
+            }
+            for task_name, task_schema in task_schemas.items():
+                pred_records = epoch_pred_features.get(task_name, [])
+                stitched_records = deduplicate_feature_records(
+                    task_schema=task_schema,
+                    feature_records=pred_records,
+                    raster_meta=epoch_raster_meta,
+                    line_distance_threshold_m=float(cfg.get("postprocess", {}).get("line_dedup_distance_m", 1.0)),
+                    polygon_iou_threshold=float(cfg.get("postprocess", {}).get("polygon_dedup_iou", 0.5)),
+                )
+                save_geojson_snapshot(
+                    path=os.path.join(stitched_out_dir, f"{task_schema.collection_name}.stitched.pred.geojson"),
+                    task_schema=task_schema,
+                    feature_records=stitched_records,
+                    raster_meta=epoch_raster_meta,
+                )
+                stitched_summary["tasks"][task_name] = {
+                    "patch_pred_feature_count": int(len(pred_records)),
+                    "stitched_feature_count": int(len(stitched_records)),
+                }
+            save_json(os.path.join(stitched_out_dir, "summary.json"), stitched_summary)
         if device.type == "cuda":
             torch.cuda.empty_cache()
         val_t0 = time.time()

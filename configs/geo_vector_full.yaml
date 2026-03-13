@@ -47,7 +47,6 @@ serialization:
       min_points_per_feature: 2
       prompt_template: >
         Output patch-local lane text for the current patch.
-        Training examples may contain plain-text metadata lines such as PatchTargetMeta and CutFeature before the final GeoJSON object.
         Learn lane field names, values, and multi-feature formatting from supervision. The final GeoJSON object must be a valid Lane FeatureCollection.
         The features array may contain zero, one, or many lane Features. Do not assume a fixed lane count.
         Do not explain anything. Do not use markdown.
@@ -58,7 +57,6 @@ serialization:
       min_points_per_feature: 3
       prompt_template: >
         Output patch-local intersection text for the current patch.
-        Training examples may contain plain-text metadata lines such as PatchTargetMeta and CutFeature before the final GeoJSON object.
         Learn intersection field names, values, and multi-feature formatting from supervision. The final GeoJSON object must be a valid Intersection FeatureCollection.
         The features array may contain zero, one, or many intersection Features. Do not assume a fixed intersection count.
         Polygon coordinates must be valid GeoJSON rings and each ring must be closed, with identical first and last coordinates.
@@ -117,10 +115,11 @@ train:
   resume_scaler: true
   batch_size: ${UNIMAPGEN_BATCH_SIZE:-1}
   val_batch_size: ${UNIMAPGEN_VAL_BATCH_SIZE:-1}
+  epoch_is_single_sample: ${UNIMAPGEN_EPOCH_IS_SINGLE_SAMPLE:-true}
   sample_patch_sequential: ${UNIMAPGEN_SAMPLE_PATCH_SEQUENTIAL:-true}
   val_sample_patch_sequential: ${UNIMAPGEN_VAL_SAMPLE_PATCH_SEQUENTIAL:-true}
   epochs: ${UNIMAPGEN_EPOCHS:-10}
-  optimize_per_sample: ${UNIMAPGEN_OPTIMIZE_PER_SAMPLE:-true}
+  optimize_per_sample: ${UNIMAPGEN_OPTIMIZE_PER_SAMPLE:-false}
   lr: ${UNIMAPGEN_LR:-0.00001}
   weight_decay: 0.01
   warmup_steps: 32

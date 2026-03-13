@@ -21,10 +21,11 @@ $StateMaxFeatures = "4"
 $StateAnchorMaxPoints = "3"
 $BatchSize = "1"
 $ValBatchSize = "1"
+$EpochIsSingleSample = "true"
 $SamplePatchSequential = "true"
 $ValSamplePatchSequential = "true"
 $Epochs = "10"
-$OptimizePerSample = "true"
+$OptimizePerSample = "false"
 $LearningRate = ""
 $PromptMaxTokens = "192"
 $StateMaxTokens = "256"
@@ -87,6 +88,7 @@ Set-EnvIfValue "UNIMAPGEN_STATE_MAX_FEATURES" $StateMaxFeatures
 Set-EnvIfValue "UNIMAPGEN_STATE_ANCHOR_MAX_POINTS" $StateAnchorMaxPoints
 Set-EnvIfValue "UNIMAPGEN_BATCH_SIZE" $BatchSize
 Set-EnvIfValue "UNIMAPGEN_VAL_BATCH_SIZE" $ValBatchSize
+Set-EnvIfValue "UNIMAPGEN_EPOCH_IS_SINGLE_SAMPLE" $EpochIsSingleSample
 Set-EnvIfValue "UNIMAPGEN_SAMPLE_PATCH_SEQUENTIAL" $SamplePatchSequential
 Set-EnvIfValue "UNIMAPGEN_VAL_SAMPLE_PATCH_SEQUENTIAL" $ValSamplePatchSequential
 Set-EnvIfValue "UNIMAPGEN_EPOCHS" $Epochs

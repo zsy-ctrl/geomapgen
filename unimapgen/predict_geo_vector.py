@@ -50,6 +50,22 @@ def _resolve_inputs(cfg, args):
     return records
 
 
+def _format_raw_text_dump(task_name: str, tile_records) -> str:
+    lines = [f"task={task_name}", f"tile_count={len(tile_records)}", ""]
+    for tile_record in tile_records:
+        tile_index = int(tile_record.get("tile_index", 0))
+        crop_bbox = tile_record.get("crop_bbox", [])
+        pred_text = str(tile_record.get("pred_text", ""))
+        lines.extend(
+            [
+                f"=== tile_index={tile_index} crop_bbox={crop_bbox} ===",
+                pred_text,
+                "",
+            ]
+        )
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, required=True)
@@ -140,7 +156,26 @@ def main() -> None:
             pred_original_features = pred_result["task_predictions"].get(task_name, [])
             raw_tile_outputs = pred_result.get("raw_outputs", {}).get(task_name, [])
             raw_output_path = os.path.join(sample_out_dir, f"{task_schema.collection_name}.raw_tiles.json")
+            raw_text_path = os.path.join(sample_out_dir, f"{task_schema.collection_name}.raw_before_json.txt")
             save_json(raw_output_path, raw_tile_outputs)
+            save_text(raw_text_path, _format_raw_text_dump(task_name=task_name, tile_records=raw_tile_outputs))
+            parse_stats = pred_result.get("parse_stats", {}).get(task_name, {})
+            if int(parse_stats.get("decoded_ok_count", 0)) == 0:
+                failed_tasks.append(str(task_name))
+                save_json(
+                    os.path.join(sample_out_dir, f"{task_schema.collection_name}.parse_failed.json"),
+                    {
+                        "task_name": str(task_name),
+                        "parse_stats": parse_stats,
+                        "raw_tiles_path": raw_output_path,
+                        "raw_text_path": raw_text_path,
+                    },
+                )
+                sample_result.setdefault("debug_outputs", {})[task_name] = {
+                    "raw_tiles": raw_output_path,
+                    "raw_text": raw_text_path,
+                }
+                continue
             geojson_dict = pixel_features_to_geojson(
                 task_schema=task_schema,
                 feature_records=pred_original_features,
@@ -149,10 +184,10 @@ def main() -> None:
             output_path = os.path.join(sample_out_dir, f"{task_schema.collection_name}.geojson")
             save_text(output_path, geojson_dumps(geojson_dict))
             sample_result["outputs"][task_name] = output_path
-            sample_result.setdefault("debug_outputs", {})[task_name] = raw_output_path
-            parse_stats = pred_result.get("parse_stats", {}).get(task_name, {})
-            if int(parse_stats.get("decoded_ok_count", 0)) == 0:
-                failed_tasks.append(str(task_name))
+            sample_result.setdefault("debug_outputs", {})[task_name] = {
+                "raw_tiles": raw_output_path,
+                "raw_text": raw_text_path,
+            }
         if failed_tasks:
             raise_geo_error(
                 "GEO-1701",
