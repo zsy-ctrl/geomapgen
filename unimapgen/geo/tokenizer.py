@@ -211,11 +211,13 @@ class GeoCoordTokenizer:
         "<cut_in_top>",
         "<cut_in_right>",
         "<cut_in_bottom>",
+        "<cut_in_internal>",
         "<cut_out_none>",
         "<cut_out_left>",
         "<cut_out_top>",
         "<cut_out_right>",
         "<cut_out_bottom>",
+        "<cut_out_internal>",
         "<side_none>",
         "<side_left>",
         "<side_top>",
@@ -294,6 +296,7 @@ class GeoCoordTokenizer:
             "top": int(self.control_token_ids["<cut_in_top>"]),
             "right": int(self.control_token_ids["<cut_in_right>"]),
             "bottom": int(self.control_token_ids["<cut_in_bottom>"]),
+            "internal": int(self.control_token_ids["<cut_in_internal>"]),
         }
         self.cut_out_token_ids = {
             "none": int(self.control_token_ids["<cut_out_none>"]),
@@ -301,6 +304,7 @@ class GeoCoordTokenizer:
             "top": int(self.control_token_ids["<cut_out_top>"]),
             "right": int(self.control_token_ids["<cut_out_right>"]),
             "bottom": int(self.control_token_ids["<cut_out_bottom>"]),
+            "internal": int(self.control_token_ids["<cut_out_internal>"]),
         }
         self.side_token_ids = {
             "none": int(self.control_token_ids["<side_none>"]),

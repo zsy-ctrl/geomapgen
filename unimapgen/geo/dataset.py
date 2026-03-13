@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -12,6 +13,7 @@ from torch.utils.data import Dataset
 from unimapgen.utils import ensure_dir
 
 from .coord_sequence import (
+    feature_record_sort_key,
     points_abs_to_uv,
     rings_abs_to_uv,
     uv_feature_records_to_state_items,
@@ -34,6 +36,7 @@ from .geometry import (
     select_tile_windows,
 )
 from .io import RasterMeta, geojson_to_pixel_features, load_geojson, read_binary_mask, read_raster_meta, read_rgb_geotiff
+from .prompting import build_task_prompt_text
 from .schema import TaskSchema
 
 
@@ -74,6 +77,8 @@ class GeoVectorDatasetConfig:
     state_anchor_max_points: int
     prompt_with_state: str
     prompt_without_state: str
+    prompt_include_geospatial_context: bool
+    prompt_geospatial_precision: int
     cache_enabled: bool
     cache_write_enabled: bool
     cache_dir: Optional[str]
@@ -224,12 +229,16 @@ class GeoVectorDataset(Dataset):
             image_size=int(self.cfg.image_size),
             anchor_max_points=int(self.cfg.state_anchor_max_points),
         )
-        prompt_text = item["task_schema"].prompt_template
-        if self.cfg.state_enabled:
-            if state_items:
-                prompt_text = f"{prompt_text} {self.cfg.prompt_with_state}".strip()
-            else:
-                prompt_text = f"{prompt_text} {self.cfg.prompt_without_state}".strip()
+        prompt_text = build_task_prompt_text(
+            base_prompt=item["task_schema"].prompt_template,
+            has_state=bool(self.cfg.state_enabled and state_items),
+            with_state_suffix=self.cfg.prompt_with_state,
+            without_state_suffix=self.cfg.prompt_without_state,
+            raster_meta=raster_meta,
+            crop_bbox=item["crop_bbox"],
+            include_geospatial_context=bool(self.cfg.prompt_include_geospatial_context),
+            geospatial_precision=int(self.cfg.prompt_geospatial_precision),
+        )
 
         return {
             "image": torch.from_numpy(image_chw).float(),
@@ -286,9 +295,15 @@ class GeoVectorDataset(Dataset):
             crop_bbox=item["crop_bbox"],
         )
         review_mask = None
-        if bool(self.cfg.feature_filter_by_review_mask) and item["review_mask_path"] and os.path.isfile(item["review_mask_path"]):
+        if item["review_mask_path"] and os.path.isfile(item["review_mask_path"]):
             review_mask = read_binary_mask(path=item["review_mask_path"], threshold=self.cfg.mask_threshold)
         image_hwc = np.clip(image_hwc, 0.0, 255.0)
+        if review_mask is not None:
+            image_hwc = self._apply_review_mask_to_image(
+                image_hwc=image_hwc,
+                review_mask=review_mask,
+                crop_bbox=item["crop_bbox"],
+            )
         resize_ctx = build_resize_context(
             width=int(raster_meta.width),
             height=int(raster_meta.height),
@@ -385,6 +400,12 @@ class GeoVectorDataset(Dataset):
             }
             if feature.get("rings"):
                 record["rings"] = [np.asarray(ring, dtype=np.float32).copy() for ring in feature.get("rings", [])]
+            if "cut_start" in feature:
+                record["cut_start"] = bool(feature.get("cut_start", False))
+            if "cut_end" in feature:
+                record["cut_end"] = bool(feature.get("cut_end", False))
+            if "clipped" in feature:
+                record["clipped"] = bool(feature.get("clipped", False))
             out.append(record)
         return out
 
@@ -396,8 +417,47 @@ class GeoVectorDataset(Dataset):
             record = {"properties": dict(feature.get("properties", {})), "points": points_uv.astype(np.float32)}
             if feature.get("rings"):
                 record["rings"] = rings_abs_to_uv(feature.get("rings", []), resize_ctx=resize_ctx)
+            if "cut_start" in feature:
+                record["cut_start"] = bool(feature.get("cut_start", False))
+            if "cut_end" in feature:
+                record["cut_end"] = bool(feature.get("cut_end", False))
+            if "clipped" in feature:
+                record["clipped"] = bool(feature.get("clipped", False))
             out.append(record)
         return out
+
+    def _crop_mask_to_bbox(
+        self,
+        review_mask: np.ndarray,
+        crop_bbox: Optional[Sequence[int]],
+    ) -> np.ndarray:
+        mask = np.asarray(review_mask, dtype=np.uint8)
+        if crop_bbox is None:
+            return mask
+        x0, y0, x1, y1 = [int(v) for v in crop_bbox]
+        return mask[y0:y1, x0:x1]
+
+    def _apply_review_mask_to_image(
+        self,
+        image_hwc: np.ndarray,
+        review_mask: np.ndarray,
+        crop_bbox: Optional[Sequence[int]],
+    ) -> np.ndarray:
+        mask_crop = self._crop_mask_to_bbox(review_mask=review_mask, crop_bbox=crop_bbox)
+        if mask_crop.ndim != 2:
+            return np.asarray(image_hwc, dtype=np.float32)
+        masked = np.asarray(image_hwc, dtype=np.float32).copy()
+        if mask_crop.shape[0] != masked.shape[0] or mask_crop.shape[1] != masked.shape[1]:
+            h = min(mask_crop.shape[0], masked.shape[0])
+            w = min(mask_crop.shape[1], masked.shape[1])
+            masked[:h, :w][mask_crop[:h, :w] <= 0] = 0.0
+            if h < masked.shape[0]:
+                masked[h:, :] = 0.0
+            if w < masked.shape[1]:
+                masked[:, w:] = 0.0
+            return masked
+        masked[mask_crop <= 0] = 0.0
+        return masked
 
     def _sample_augment_params(self) -> Tuple[int, bool, bool]:
         rot_k = 0
@@ -415,17 +475,41 @@ class GeoVectorDataset(Dataset):
         hflip: bool,
         vflip: bool,
     ) -> Tuple[np.ndarray, List[Dict]]:
-        points = [np.asarray(feature.get("points", []), dtype=np.float32).copy() for feature in feature_records]
-        aug_image, aug_points = apply_square_augment(
+        point_arrays = [np.asarray(feature.get("points", []), dtype=np.float32).copy() for feature in feature_records]
+        ring_arrays: List[np.ndarray] = []
+        ring_counts: List[int] = []
+        for feature in feature_records:
+            rings = [np.asarray(ring, dtype=np.float32).copy() for ring in feature.get("rings", [])]
+            ring_counts.append(len(rings))
+            ring_arrays.extend(rings)
+
+        combined_arrays = point_arrays + ring_arrays
+        aug_image, aug_arrays = apply_square_augment(
             image_chw=image_chw,
-            feature_points=points,
+            feature_points=combined_arrays,
             rot90_k=rot_k,
             hflip=hflip,
             vflip=vflip,
         )
+        aug_points = aug_arrays[: len(point_arrays)]
+        aug_rings_flat = aug_arrays[len(point_arrays) :]
         out = []
-        for feature, pts in zip(feature_records, aug_points):
-            out.append({"properties": dict(feature.get("properties", {})), "points": pts.astype(np.float32)})
+        ring_offset = 0
+        for feature, pts, ring_count in zip(feature_records, aug_points, ring_counts):
+            record = {"properties": dict(feature.get("properties", {})), "points": pts.astype(np.float32)}
+            if ring_count > 0:
+                record["rings"] = [
+                    np.asarray(aug_rings_flat[ring_offset + idx], dtype=np.float32).astype(np.float32)
+                    for idx in range(int(ring_count))
+                ]
+                ring_offset += int(ring_count)
+            if "cut_start" in feature:
+                record["cut_start"] = bool(feature.get("cut_start", False))
+            if "cut_end" in feature:
+                record["cut_end"] = bool(feature.get("cut_end", False))
+            if "clipped" in feature:
+                record["clipped"] = bool(feature.get("clipped", False))
+            out.append(record)
         return aug_image, out
 
     def _build_tile_windows(
@@ -513,6 +597,116 @@ class GeoVectorDataset(Dataset):
             out.append((int(x0), int(y0), int(x1), int(min(y1, y0 + margin))))
         return out
 
+    def _sorted_raw_features(
+        self,
+        raw_features: Sequence[Dict],
+        task_schema: TaskSchema,
+    ) -> List[Dict]:
+        cloned = self._clone_feature_records(raw_features)
+        cloned.sort(key=lambda feature: feature_record_sort_key(feature=feature, geometry_type=task_schema.geometry_type))
+        return cloned
+
+    def _line_mask_segments(
+        self,
+        points_xy: np.ndarray,
+        task_schema: TaskSchema,
+        review_mask: Optional[np.ndarray],
+    ) -> List[Dict]:
+        pts = np.asarray(points_xy, dtype=np.float32)
+        if pts.ndim != 2 or pts.shape[0] < int(task_schema.min_points_per_feature):
+            return []
+        if review_mask is None or not bool(self.cfg.feature_filter_by_review_mask):
+            return [{"points": pts.astype(np.float32), "cut_start": False, "cut_end": False}]
+        height, width = review_mask.shape[:2]
+        cols = np.clip(np.round(pts[:, 0]).astype(np.int64), 0, width - 1)
+        rows = np.clip(np.round(pts[:, 1]).astype(np.int64), 0, height - 1)
+        inside = (review_mask[rows, cols] > 0).tolist()
+        out: List[Dict] = []
+        start = None
+        for idx, flag in enumerate(inside):
+            if flag and start is None:
+                start = idx
+            if (not flag) and start is not None:
+                piece = pts[start:idx]
+                if piece.shape[0] >= int(task_schema.min_points_per_feature):
+                    out.append(
+                        {
+                            "points": piece.astype(np.float32),
+                            "cut_start": bool(start > 0),
+                            "cut_end": bool(idx < pts.shape[0]),
+                        }
+                    )
+                start = None
+        if start is not None:
+            piece = pts[start:]
+            if piece.shape[0] >= int(task_schema.min_points_per_feature):
+                out.append(
+                    {
+                        "points": piece.astype(np.float32),
+                        "cut_start": bool(start > 0),
+                        "cut_end": False,
+                    }
+                )
+        return out
+
+    def _line_piece_cut_flags_after_clip(
+        self,
+        source_points: np.ndarray,
+        clipped_points: np.ndarray,
+        cut_start: bool,
+        cut_end: bool,
+    ) -> Tuple[bool, bool]:
+        src = np.asarray(source_points, dtype=np.float32)
+        dst = np.asarray(clipped_points, dtype=np.float32)
+        if src.ndim != 2 or dst.ndim != 2 or src.shape[0] == 0 or dst.shape[0] == 0:
+            return bool(cut_start), bool(cut_end)
+        tol = 1e-3
+        new_cut_start = bool(cut_start) or not np.allclose(dst[0], src[0], atol=tol)
+        new_cut_end = bool(cut_end) or not np.allclose(dst[-1], src[-1], atol=tol)
+        return new_cut_start, new_cut_end
+
+    def _polygon_passes_review_mask(
+        self,
+        rings_xy: Sequence[np.ndarray],
+        task_schema: TaskSchema,
+        review_mask: Optional[np.ndarray],
+    ) -> Tuple[bool, bool]:
+        if not rings_xy:
+            return False, False
+        outer = np.asarray(rings_xy[0], dtype=np.float32)
+        if outer.ndim != 2 or outer.shape[0] < int(task_schema.min_points_per_feature):
+            return False, False
+        if review_mask is None or not bool(self.cfg.feature_filter_by_review_mask):
+            return True, False
+        height, width = review_mask.shape[:2]
+        cols = np.clip(np.round(outer[:, 0]).astype(np.int64), 0, width - 1)
+        rows = np.clip(np.round(outer[:, 1]).astype(np.int64), 0, height - 1)
+        inside = review_mask[rows, cols] > 0
+        inside_ratio = float(inside.mean()) if inside.size > 0 else 0.0
+        return bool(inside_ratio >= float(self.cfg.feature_mask_min_inside_ratio)), bool(inside_ratio < 0.999)
+
+    def _feature_record_output_sort_key(
+        self,
+        feature: Dict,
+        task_schema: TaskSchema,
+    ) -> Tuple:
+        return feature_record_sort_key(feature=feature, geometry_type=task_schema.geometry_type)
+
+    def _rings_equal(
+        self,
+        src_rings: Sequence[np.ndarray],
+        dst_rings: Sequence[np.ndarray],
+        tol: float = 1e-3,
+    ) -> bool:
+        if len(src_rings) != len(dst_rings):
+            return False
+        for src_ring, dst_ring in zip(src_rings, dst_rings):
+            src = np.asarray(src_ring, dtype=np.float32)
+            dst = np.asarray(dst_ring, dtype=np.float32)
+            if src.shape != dst.shape or not np.allclose(src, dst, atol=float(tol)):
+                return False
+        return True
+
     def _prepare_features(
         self,
         raw_features: Sequence[Dict],
@@ -531,96 +725,160 @@ class GeoVectorDataset(Dataset):
             interval_px = float(self.cfg.sample_interval_meter) / pixel_size_meter
         closed = bool(task_schema.geometry_type == "polygon")
         crop_bbox_tuple = None if crop_bbox is None else tuple(int(v) for v in crop_bbox)
-
-        for feature in raw_features:
+        for feature in self._sorted_raw_features(raw_features=raw_features, task_schema=task_schema):
             if task_schema.geometry_type == "polygon" and feature.get("rings"):
                 rings_original = [np.asarray(ring, dtype=np.float32) for ring in feature.get("rings", [])]
-                pts_original = np.asarray(rings_original[0], dtype=np.float32) if rings_original else np.zeros((0, 2), dtype=np.float32)
-                if pts_original.ndim != 2 or pts_original.shape[0] < int(task_schema.min_points_per_feature):
-                    continue
-                if crop_bbox_tuple is not None and not feature_intersects_bbox(pts_original, crop_bbox_tuple):
-                    continue
-                ring_groups = [rings_original] if crop_bbox_tuple is None else clip_polygon_rings_to_bbox(
+                ok_by_mask, partial_by_mask = self._polygon_passes_review_mask(
                     rings_xy=rings_original,
-                    bbox=crop_bbox_tuple,
+                    task_schema=task_schema,
+                    review_mask=review_mask,
                 )
-                for ring_group in ring_groups:
-                    if not ring_group or ring_group[0].shape[0] < int(task_schema.min_points_per_feature):
-                        continue
-                    candidate_groups = [ring_group]
-                    if state_bboxes:
-                        candidate_groups = []
-                        for state_bbox in state_bboxes:
-                            if not feature_intersects_bbox(ring_group[0], state_bbox):
-                                continue
-                            candidate_groups.extend(
-                                clip_polygon_rings_to_bbox(
-                                    rings_xy=ring_group,
-                                    bbox=state_bbox,
-                                )
-                            )
+                if not ok_by_mask:
+                    continue
+                candidate_groups: List[Dict] = [{"rings": rings_original, "clipped": bool(partial_by_mask)}]
+                if crop_bbox_tuple is not None:
+                    cropped_groups: List[Dict] = []
                     for candidate_group in candidate_groups:
-                        if not candidate_group or candidate_group[0].shape[0] < int(task_schema.min_points_per_feature):
+                        outer = np.asarray(candidate_group["rings"][0], dtype=np.float32)
+                        if outer.ndim != 2 or outer.shape[0] < int(task_schema.min_points_per_feature):
                             continue
-                        if interval_px is not None:
-                            resampled_group = []
-                            for ring in candidate_group:
-                                resampled_ring = resample_feature_points(
-                                    points_xy=ring,
-                                    interval_px=float(interval_px),
-                                    max_points=max(4, int(ring.shape[0] * 2)),
-                                    closed=True,
+                        if not feature_intersects_bbox(outer, crop_bbox_tuple):
+                            continue
+                        clipped_groups = clip_polygon_rings_to_bbox(
+                            rings_xy=candidate_group["rings"],
+                            bbox=crop_bbox_tuple,
+                        )
+                        for clipped_group in clipped_groups:
+                            if not clipped_group or clipped_group[0].shape[0] < int(task_schema.min_points_per_feature):
+                                continue
+                            cropped_groups.append(
+                                {
+                                    "rings": clipped_group,
+                                    "clipped": bool(candidate_group["clipped"]) or not self._rings_equal(candidate_group["rings"], clipped_group),
+                                }
+                            )
+                    candidate_groups = cropped_groups
+                if state_bboxes:
+                    state_groups: List[Dict] = []
+                    for candidate_group in candidate_groups:
+                        outer = np.asarray(candidate_group["rings"][0], dtype=np.float32)
+                        if outer.ndim != 2 or outer.shape[0] < int(task_schema.min_points_per_feature):
+                            continue
+                        for state_bbox in state_bboxes:
+                            if not feature_intersects_bbox(outer, state_bbox):
+                                continue
+                            clipped_groups = clip_polygon_rings_to_bbox(
+                                rings_xy=candidate_group["rings"],
+                                bbox=state_bbox,
+                            )
+                            for clipped_group in clipped_groups:
+                                if not clipped_group or clipped_group[0].shape[0] < int(task_schema.min_points_per_feature):
+                                    continue
+                                state_groups.append(
+                                    {
+                                        "rings": clipped_group,
+                                        "clipped": True,
+                                    }
                                 )
-                                if resampled_ring.shape[0] >= int(task_schema.min_points_per_feature):
-                                    resampled_group.append(resampled_ring)
-                            candidate_group = resampled_group
-                        if not candidate_group or candidate_group[0].shape[0] < int(task_schema.min_points_per_feature):
-                            continue
-                        mask_points = np.concatenate(candidate_group, axis=0)
-                        trusted_pieces = self._filter_candidate_with_review_mask(
-                            candidate=mask_points,
-                            task_schema=task_schema,
-                            review_mask=review_mask,
-                        )
-                        if not trusted_pieces:
-                            continue
-                        out.append(
-                            {
-                                "properties": dict(feature.get("properties", {})),
-                                "points": candidate_group[0].astype(np.float32),
-                                "rings": [ring.astype(np.float32) for ring in candidate_group],
-                            }
-                        )
-                        if max_features_limit > 0 and len(out) >= max_features_limit:
-                            return out
+                    candidate_groups = state_groups
+                for candidate_group in candidate_groups:
+                    rings_group = [np.asarray(ring, dtype=np.float32) for ring in candidate_group["rings"]]
+                    if interval_px is not None:
+                        resampled_group = []
+                        for ring in rings_group:
+                            resampled_ring = resample_feature_points(
+                                points_xy=ring,
+                                interval_px=float(interval_px),
+                                max_points=max(4, int(ring.shape[0] * 2)),
+                                closed=True,
+                            )
+                            if resampled_ring.shape[0] >= int(task_schema.min_points_per_feature):
+                                resampled_group.append(resampled_ring)
+                        rings_group = resampled_group
+                    if not rings_group or rings_group[0].shape[0] < int(task_schema.min_points_per_feature):
+                        continue
+                    out.append(
+                        {
+                            "properties": dict(feature.get("properties", {})),
+                            "points": rings_group[0].astype(np.float32),
+                            "rings": [ring.astype(np.float32) for ring in rings_group],
+                            "clipped": bool(candidate_group.get("clipped", False)),
+                        }
+                    )
+                    if max_features_limit > 0 and len(out) >= max_features_limit:
+                        out.sort(key=lambda record: self._feature_record_output_sort_key(record, task_schema))
+                        return out
                 continue
+
             pts_original = np.asarray(feature.get("points", []), dtype=np.float32)
             if pts_original.ndim != 2 or pts_original.shape[0] < int(task_schema.min_points_per_feature):
                 continue
-            if crop_bbox_tuple is not None and not feature_intersects_bbox(pts_original, crop_bbox_tuple):
-                continue
-            pieces = [pts_original] if crop_bbox_tuple is None else clip_feature_to_bbox(
+            trusted_segments = self._line_mask_segments(
                 points_xy=pts_original,
-                bbox=crop_bbox_tuple,
-                geometry_type=task_schema.geometry_type,
+                task_schema=task_schema,
+                review_mask=review_mask,
             )
-            for piece in pieces:
-                if piece.shape[0] < int(task_schema.min_points_per_feature):
+            for trusted_segment in trusted_segments:
+                source_points = np.asarray(trusted_segment["points"], dtype=np.float32)
+                if source_points.ndim != 2 or source_points.shape[0] < int(task_schema.min_points_per_feature):
                     continue
-                candidate_pieces = [piece]
+                candidate_segments: List[Dict] = [trusted_segment]
+                if crop_bbox_tuple is not None:
+                    cropped_segments: List[Dict] = []
+                    if feature_intersects_bbox(source_points, crop_bbox_tuple):
+                        clipped_pieces = clip_feature_to_bbox(
+                            points_xy=source_points,
+                            bbox=crop_bbox_tuple,
+                            geometry_type=task_schema.geometry_type,
+                        )
+                        for clipped_piece in clipped_pieces:
+                            if clipped_piece.shape[0] < int(task_schema.min_points_per_feature):
+                                continue
+                            new_cut_start, new_cut_end = self._line_piece_cut_flags_after_clip(
+                                source_points=source_points,
+                                clipped_points=clipped_piece,
+                                cut_start=bool(trusted_segment.get("cut_start", False)),
+                                cut_end=bool(trusted_segment.get("cut_end", False)),
+                            )
+                            cropped_segments.append(
+                                {
+                                    "points": clipped_piece.astype(np.float32),
+                                    "cut_start": bool(new_cut_start),
+                                    "cut_end": bool(new_cut_end),
+                                }
+                            )
+                    candidate_segments = cropped_segments
                 if state_bboxes:
-                    candidate_pieces = []
-                    for state_bbox in state_bboxes:
-                        if not feature_intersects_bbox(piece, state_bbox):
-                            continue
-                        candidate_pieces.extend(
-                            clip_feature_to_bbox(
-                                points_xy=piece,
+                    state_segments: List[Dict] = []
+                    for candidate_segment in candidate_segments:
+                        candidate_points = np.asarray(candidate_segment["points"], dtype=np.float32)
+                        for state_bbox in state_bboxes:
+                            if not feature_intersects_bbox(candidate_points, state_bbox):
+                                continue
+                            clipped_pieces = clip_feature_to_bbox(
+                                points_xy=candidate_points,
                                 bbox=state_bbox,
                                 geometry_type=task_schema.geometry_type,
                             )
-                        )
-                for candidate in candidate_pieces:
+                            for clipped_piece in clipped_pieces:
+                                if clipped_piece.shape[0] < int(task_schema.min_points_per_feature):
+                                    continue
+                                new_cut_start, new_cut_end = self._line_piece_cut_flags_after_clip(
+                                    source_points=candidate_points,
+                                    clipped_points=clipped_piece,
+                                    cut_start=bool(candidate_segment.get("cut_start", False)),
+                                    cut_end=bool(candidate_segment.get("cut_end", False)),
+                                )
+                                state_segments.append(
+                                    {
+                                        "points": clipped_piece.astype(np.float32),
+                                        "cut_start": bool(new_cut_start),
+                                        "cut_end": bool(new_cut_end),
+                                    }
+                                )
+                    candidate_segments = state_segments
+                for candidate_segment in candidate_segments:
+                    candidate = np.asarray(candidate_segment["points"], dtype=np.float32)
                     if candidate.shape[0] < int(task_schema.min_points_per_feature):
                         continue
                     if interval_px is not None:
@@ -630,15 +888,21 @@ class GeoVectorDataset(Dataset):
                             max_points=max(4, int(candidate.shape[0] * 2)),
                             closed=closed,
                         )
-                    trusted_pieces = self._filter_candidate_with_review_mask(
-                        candidate=candidate,
-                        task_schema=task_schema,
-                        review_mask=review_mask,
+                    if candidate.shape[0] < int(task_schema.min_points_per_feature):
+                        continue
+                    out.append(
+                        {
+                            "properties": dict(feature.get("properties", {})),
+                            "points": candidate.astype(np.float32),
+                            "cut_start": bool(candidate_segment.get("cut_start", False)),
+                            "cut_end": bool(candidate_segment.get("cut_end", False)),
+                            "clipped": bool(candidate_segment.get("cut_start", False) or candidate_segment.get("cut_end", False)),
+                        }
                     )
-                    for trusted_piece in trusted_pieces:
-                        out.append({"properties": dict(feature.get("properties", {})), "points": trusted_piece.astype(np.float32)})
-                        if max_features_limit > 0 and len(out) >= max_features_limit:
-                            return out
+                    if max_features_limit > 0 and len(out) >= max_features_limit:
+                        out.sort(key=lambda record: self._feature_record_output_sort_key(record, task_schema))
+                        return out
+        out.sort(key=lambda record: self._feature_record_output_sort_key(record, task_schema))
         return out
 
     def _filter_candidate_with_review_mask(

@@ -19,6 +19,8 @@ $StateMaxFeatures = "32"
 $StateAnchorMaxPoints = "6"
 $BatchSize = "1"
 $ValBatchSize = "1"
+$SamplePatchSequential = "true"
+$ValSamplePatchSequential = "true"
 $Epochs = "10"
 $LearningRate = ""
 $PromptMaxTokens = "0"
@@ -43,7 +45,7 @@ $ArtifactMaxPatchImagesPerSample = "0"
 $CacheEnabled = "false"
 $CacheWriteEnabled = "true"
 $CacheDir = ""
-$CacheNamespace = "geo_patch_cache_v1"
+$CacheNamespace = "geo_patch_cache_v2"
 
 function Set-EnvIfValue([string]$Name, [string]$Value) {
     if ($null -ne $Value -and $Value -ne "") {
@@ -75,6 +77,8 @@ Set-EnvIfValue "UNIMAPGEN_STATE_MAX_FEATURES" $StateMaxFeatures
 Set-EnvIfValue "UNIMAPGEN_STATE_ANCHOR_MAX_POINTS" $StateAnchorMaxPoints
 Set-EnvIfValue "UNIMAPGEN_BATCH_SIZE" $BatchSize
 Set-EnvIfValue "UNIMAPGEN_VAL_BATCH_SIZE" $ValBatchSize
+Set-EnvIfValue "UNIMAPGEN_SAMPLE_PATCH_SEQUENTIAL" $SamplePatchSequential
+Set-EnvIfValue "UNIMAPGEN_VAL_SAMPLE_PATCH_SEQUENTIAL" $ValSamplePatchSequential
 Set-EnvIfValue "UNIMAPGEN_EPOCHS" $Epochs
 Set-EnvIfValue "UNIMAPGEN_LR" $LearningRate
 Set-EnvIfValue "UNIMAPGEN_PROMPT_MAX_TOKENS" $PromptMaxTokens

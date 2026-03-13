@@ -132,6 +132,11 @@ def build_geo_dataset(
                 "No previous cut-point state anchors are available for this patch.",
             )
         ).strip(),
+        prompt_include_geospatial_context=_parse_cfg_bool(
+            prompt_cfg.get("include_geospatial_context", True),
+            default=True,
+        ),
+        prompt_geospatial_precision=int(prompt_cfg.get("geospatial_precision", 3)),
         cache_enabled=_parse_cfg_bool(data_cfg.get("cache_enabled", False), default=False),
         cache_write_enabled=_parse_cfg_bool(data_cfg.get("cache_write_enabled", True), default=True),
         cache_dir=str(data_cfg.get("cache_dir", "")).strip() or None,

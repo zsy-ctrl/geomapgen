@@ -240,6 +240,9 @@ class QwenSatelliteMapGenerator(nn.Module):
         sat_requires_grad = any(p.requires_grad for p in self.sat_encoder.parameters())
         with torch.set_grad_enabled(bool(sat_requires_grad)):
             sat_tokens = self.sat_encoder(image)
+        sat_proj_dtype = self.sat_proj.weight.dtype
+        if sat_tokens.dtype != sat_proj_dtype:
+            sat_tokens = sat_tokens.to(dtype=sat_proj_dtype)
         sat_tokens = self.sat_proj(sat_tokens).to(dtype=self.llm_embed_dtype)
         sat_mask = torch.ones(
             (image.shape[0], sat_tokens.shape[1]),

@@ -224,26 +224,30 @@ def export_batch_geojson_snapshots(
                 )
 
             if save_predictions:
+                if device.type == "cuda":
+                    torch.cuda.empty_cache()
+                use_amp = bool((cfg or {}).get("train", {}).get("amp", False)) and device.type == "cuda"
                 with torch.inference_mode():
-                    pred_ids = model.generate(
-                        image=batch["image"][sample_index : sample_index + 1].to(device),
-                        prompt_input_ids=batch["prompt_input_ids"][sample_index : sample_index + 1].to(device),
-                        prompt_attention_mask=batch["prompt_attention_mask"][sample_index : sample_index + 1].to(device),
-                        pv_images=None,
-                        state_input_ids=batch["state_input_ids"][sample_index : sample_index + 1].to(device),
-                        state_attention_mask=batch["state_attention_mask"][sample_index : sample_index + 1].to(device),
-                        max_new_tokens=int(decode_cfg.get("max_new_tokens", 512)),
-                        min_new_tokens=int(decode_cfg.get("min_new_tokens", 8)),
-                        temperature=float(decode_cfg.get("temperature", 1.0)),
-                        top_k=int(decode_cfg.get("top_k", 1)),
-                        repetition_penalty=float(decode_cfg.get("repetition_penalty", 1.0)),
-                        grammar_helper=text_tokenizer.build_map_grammar_helper(
-                            task_schema=task_schema,
-                            max_prop_tokens=int(decode_cfg.get("max_prop_tokens", 128)),
-                        ),
-                        use_kv_cache=_as_bool(decode_cfg.get("use_kv_cache", True), default=True),
-                        return_token_meta=False,
-                    )
+                    with torch.amp.autocast("cuda", enabled=use_amp):
+                        pred_ids = model.generate(
+                            image=batch["image"][sample_index : sample_index + 1].to(device),
+                            prompt_input_ids=batch["prompt_input_ids"][sample_index : sample_index + 1].to(device),
+                            prompt_attention_mask=batch["prompt_attention_mask"][sample_index : sample_index + 1].to(device),
+                            pv_images=None,
+                            state_input_ids=batch["state_input_ids"][sample_index : sample_index + 1].to(device),
+                            state_attention_mask=batch["state_attention_mask"][sample_index : sample_index + 1].to(device),
+                            max_new_tokens=int(decode_cfg.get("max_new_tokens", 512)),
+                            min_new_tokens=int(decode_cfg.get("min_new_tokens", 8)),
+                            temperature=float(decode_cfg.get("temperature", 1.0)),
+                            top_k=int(decode_cfg.get("top_k", 1)),
+                            repetition_penalty=float(decode_cfg.get("repetition_penalty", 1.0)),
+                            grammar_helper=text_tokenizer.build_map_grammar_helper(
+                                task_schema=task_schema,
+                                max_prop_tokens=int(decode_cfg.get("max_prop_tokens", 128)),
+                            ),
+                            use_kv_cache=_as_bool(decode_cfg.get("use_kv_cache", True), default=True),
+                            return_token_meta=False,
+                        )
                 pred_token_ids = pred_ids[0].detach().cpu().tolist()
                 pred_items, decode_info = text_tokenizer.decode_map_items(
                     token_ids=pred_token_ids,
@@ -269,6 +273,8 @@ def export_batch_geojson_snapshots(
                         "pred_item_count": int(len(pred_items)),
                     },
                 )
+                if device.type == "cuda":
+                    torch.cuda.empty_cache()
     finally:
         if was_training:
             model.train()

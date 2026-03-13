@@ -28,6 +28,7 @@ from .geometry import (
 )
 from .metrics import deduplicate_feature_records
 from .pipeline import get_stage_tiling_cfg
+from .prompting import build_task_prompt_text
 from .schema import TaskSchema
 from .io import pixel_features_to_geojson, read_binary_mask, read_raster_meta, read_rgb_geotiff
 
@@ -45,18 +46,34 @@ def _as_bool(value, default: bool = False) -> bool:
     return bool(default)
 
 
-def prompt_text_for_task(cfg: Dict, task_schema: TaskSchema, has_state: bool) -> str:
+def prompt_text_for_task(
+    cfg: Dict,
+    task_schema: TaskSchema,
+    has_state: bool,
+    raster_meta,
+    crop_bbox: Optional[Sequence[int]],
+) -> str:
     prompt_cfg = cfg.get("prompt", {})
-    suffix = str(
-        prompt_cfg.get(
-            "with_state_suffix" if has_state else "without_state_suffix",
-            "Previous cut-point state anchors are provided below. Continue local increments only."
-            if has_state
-            else "No previous cut-point state anchors are available for this patch.",
-        )
-    ).strip()
-    text = str(task_schema.prompt_template).strip()
-    return f"{text} {suffix}".strip() if suffix else text
+    return build_task_prompt_text(
+        base_prompt=str(task_schema.prompt_template).strip(),
+        has_state=bool(has_state),
+        with_state_suffix=str(
+            prompt_cfg.get(
+                "with_state_suffix",
+                "Previous cut-point state anchors are provided below. Continue local increments only.",
+            )
+        ).strip(),
+        without_state_suffix=str(
+            prompt_cfg.get(
+                "without_state_suffix",
+                "No previous cut-point state anchors are available for this patch.",
+            )
+        ).strip(),
+        raster_meta=raster_meta,
+        crop_bbox=crop_bbox,
+        include_geospatial_context=_as_bool(prompt_cfg.get("include_geospatial_context", True), default=True),
+        geospatial_precision=int(prompt_cfg.get("geospatial_precision", 3)),
+    )
 
 
 def _infer_sample_dir_from_image(cfg: Dict, image_path: str) -> str:
@@ -525,7 +542,13 @@ def run_tiled_sample_prediction(
             )
             has_state = bool(state_items)
             prompt_ids = text_tokenizer.encode_prompt(
-                prompt_text_for_task(cfg=cfg, task_schema=task_schema, has_state=has_state)
+                prompt_text_for_task(
+                    cfg=cfg,
+                    task_schema=task_schema,
+                    has_state=has_state,
+                    raster_meta=raster_meta,
+                    crop_bbox=crop_bbox,
+                )
             )
             prompt_input_ids = torch.tensor(prompt_ids, dtype=torch.long, device=device).unsqueeze(0)
             prompt_attention_mask = torch.ones_like(prompt_input_ids, dtype=torch.long)

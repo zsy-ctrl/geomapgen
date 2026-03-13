@@ -38,6 +38,28 @@ def compact_props_json(props: Dict) -> str:
     return json.dumps(dict(props or {}), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
+def feature_record_sort_key(feature: Dict, geometry_type: str) -> Tuple:
+    geom = str(geometry_type or "").strip().lower()
+    if geom == "polygon" and feature.get("rings"):
+        pts = canonicalize_polygon_rings(feature.get("rings", []))
+        points = pts[0] if pts else np.zeros((0, 2), dtype=np.float32)
+    else:
+        points = _canonicalize_line_lex(np.asarray(feature.get("points", []), dtype=np.float32))
+    if points.ndim != 2 or points.shape[0] == 0:
+        return (10**9, 10**9, 10**9, 10**9, 0, compact_props_json(feature.get("properties", {})))
+    first = points[0]
+    last = points[-1]
+    props_text = compact_props_json(feature.get("properties", {}))
+    return (
+        float(first[1]),
+        float(first[0]),
+        float(last[1]),
+        float(last[0]),
+        int(points.shape[0]),
+        props_text,
+    )
+
+
 def parse_props_json(text: str) -> Dict:
     raw = str(text or "").strip()
     if not raw:
@@ -160,6 +182,17 @@ def _canonicalize_line(points_uv: np.ndarray, image_size: int, tol_px: float) ->
     return points_uv.copy()
 
 
+def _canonicalize_line_lex(points_uv: np.ndarray) -> np.ndarray:
+    pts = np.asarray(points_uv, dtype=np.float32)
+    if pts.shape[0] <= 1:
+        return pts.copy()
+    start_key = (float(pts[0, 1]), float(pts[0, 0]), float(pts[-1, 1]), float(pts[-1, 0]))
+    end_key = (float(pts[-1, 1]), float(pts[-1, 0]), float(pts[0, 1]), float(pts[0, 0]))
+    if end_key < start_key:
+        return pts[::-1].copy()
+    return pts.copy()
+
+
 def _rotate_polygon_to_min(points_uv: np.ndarray) -> np.ndarray:
     pts = np.asarray(points_uv, dtype=np.float32)
     if pts.shape[0] <= 1:
@@ -222,6 +255,13 @@ def uv_feature_records_to_target_items(
         if task_schema.geometry_type == "linestring":
             cut_in = boundary_side_for_point_uv(points_uv[0], image_size=image_size, tol_px=boundary_tol_px)
             cut_out = boundary_side_for_point_uv(points_uv[-1], image_size=image_size, tol_px=boundary_tol_px)
+            if cut_in == "none" and bool(feature.get("cut_start", False)):
+                cut_in = "internal"
+            if cut_out == "none" and bool(feature.get("cut_end", False)):
+                cut_out = "internal"
+        elif bool(feature.get("clipped", False)):
+            cut_in = "internal"
+            cut_out = "internal"
         out.append(
             {
                 "geometry_type": task_schema.geometry_type,
@@ -233,6 +273,7 @@ def uv_feature_records_to_target_items(
                 "source": "state" if cut_in in {"left", "top"} else "local",
             }
         )
+    out.sort(key=lambda item: _item_sort_key(item=item, geometry_type=task_schema.geometry_type))
     return out
 
 
@@ -268,6 +309,7 @@ def uv_feature_records_to_state_items(
                     "points_uv": sample_anchor_points(points_uv=points_uv, max_points=anchor_max_points),
                 }
             )
+    out.sort(key=lambda item: _state_item_sort_key(item=item))
     return out
 
 
@@ -302,3 +344,37 @@ def uv_items_to_abs_feature_records(
             }
         )
     return out
+
+
+def _item_sort_key(item: Dict, geometry_type: str) -> Tuple:
+    geom = str(geometry_type or "").strip().lower()
+    if geom == "polygon" and item.get("rings_uv"):
+        rings = canonicalize_polygon_rings(item.get("rings_uv", []))
+        points = rings[0] if rings else np.zeros((0, 2), dtype=np.float32)
+    else:
+        points = _canonicalize_line_lex(np.asarray(item.get("points_uv", []), dtype=np.float32))
+    if points.ndim != 2 or points.shape[0] == 0:
+        return (10**9, 10**9, 10**9, 10**9, 0, str(item.get("props_json", "")))
+    first = points[0]
+    last = points[-1]
+    return (
+        float(first[1]),
+        float(first[0]),
+        float(last[1]),
+        float(last[0]),
+        int(points.shape[0]),
+        str(item.get("props_json", "")),
+    )
+
+
+def _state_item_sort_key(item: Dict) -> Tuple:
+    points = _canonicalize_line_lex(np.asarray(item.get("points_uv", []), dtype=np.float32))
+    if points.ndim != 2 or points.shape[0] == 0:
+        return (_SIDE_ORDER.get(str(item.get("side", "none")), 99), 10**9, 10**9, 0)
+    first = points[0]
+    return (
+        _SIDE_ORDER.get(str(item.get("side", "none")), 99),
+        float(first[1]),
+        float(first[0]),
+        int(points.shape[0]),
+    )

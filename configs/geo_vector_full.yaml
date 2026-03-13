@@ -22,7 +22,7 @@ data:
   cache_enabled: ${UNIMAPGEN_CACHE_ENABLED:-false}
   cache_write_enabled: ${UNIMAPGEN_CACHE_WRITE_ENABLED:-true}
   cache_dir: ${UNIMAPGEN_CACHE_DIR:-}
-  cache_namespace: ${UNIMAPGEN_CACHE_NAMESPACE:-geo_patch_cache_v1}
+  cache_namespace: ${UNIMAPGEN_CACHE_NAMESPACE:-geo_patch_cache_v2}
   review_crop_pad_px: 64
   num_workers: 0
   val_num_workers: 0
@@ -49,6 +49,7 @@ serialization:
         Generate all lane instances present in the current patch as structured quantized coordinate tokens.
         Do not assume a fixed lane count or a fixed property template from any example.
         Learn lane property keys and values from the supervision GeoJSON and use cut-point aware local increments only.
+        If a lane was clipped by the review mask or by the patch crop, preserve the cut markers so the sequence is understood as a partial local lane.
     intersection:
       collection_name: Intersection
       geometry_type: polygon
@@ -60,8 +61,11 @@ serialization:
         Learn intersection property keys and values from the supervision GeoJSON.
         Output polygon boundary points in order; the final GeoJSON ring must be closed so the first and last coordinate are identical.
         Use cut-point aware local increments only.
+        If an intersection polygon is clipped by the review mask or by the patch crop, preserve the internal cut markers so the sequence is understood as a partial local polygon.
 
 prompt:
+  include_geospatial_context: ${UNIMAPGEN_PROMPT_INCLUDE_GEOSPATIAL_CONTEXT:-true}
+  geospatial_precision: ${UNIMAPGEN_PROMPT_GEOSPATIAL_PRECISION:-3}
   with_state_suffix: >
     Previous cut-point state anchors are provided below. Continue only the local increment needed for this patch.
   without_state_suffix: >
@@ -112,6 +116,8 @@ train:
   resume_scaler: true
   batch_size: ${UNIMAPGEN_BATCH_SIZE:-1}
   val_batch_size: ${UNIMAPGEN_VAL_BATCH_SIZE:-1}
+  sample_patch_sequential: ${UNIMAPGEN_SAMPLE_PATCH_SEQUENTIAL:-true}
+  val_sample_patch_sequential: ${UNIMAPGEN_VAL_SAMPLE_PATCH_SEQUENTIAL:-true}
   epochs: ${UNIMAPGEN_EPOCHS:-10}
   lr: ${UNIMAPGEN_LR:-0.00001}
   weight_decay: 0.01

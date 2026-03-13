@@ -3,10 +3,11 @@ import json
 import os
 import sys
 import time
+from collections import OrderedDict
 
 import torch
 import yaml
-from torch.utils.data import DataLoader
+from torch.utils.data import BatchSampler, DataLoader
 from tqdm import tqdm
 
 from unimapgen.geo.artifacts import (
@@ -26,6 +27,38 @@ from unimapgen.geo.pipeline import (
     maybe_resume_training_state,
 )
 from unimapgen.utils import cosine_lr, load_yaml, select_torch_device, set_seed
+
+
+class SampleSequentialBatchSampler(BatchSampler):
+    def __init__(self, items, batch_size: int, task_order: dict[str, int], drop_last: bool = False) -> None:
+        self.batch_size = max(1, int(batch_size))
+        self.drop_last = bool(drop_last)
+        grouped: OrderedDict[str, list[tuple[int, dict]]] = OrderedDict()
+        for index, item in enumerate(items):
+            sample_id = str(item.get("sample_id", ""))
+            grouped.setdefault(sample_id, []).append((int(index), item))
+
+        self._batches: list[list[int]] = []
+        for _, entries in grouped.items():
+            entries.sort(
+                key=lambda pair: (
+                    int(pair[1].get("tile_index", 0)),
+                    int(task_order.get(str(pair[1].get("task_name", "")), 10**6)),
+                    int(pair[0]),
+                )
+            )
+            indices = [int(index) for index, _ in entries]
+            for start in range(0, len(indices), self.batch_size):
+                batch = indices[start : start + self.batch_size]
+                if len(batch) < self.batch_size and self.drop_last:
+                    continue
+                self._batches.append(batch)
+
+    def __iter__(self):
+        yield from self._batches
+
+    def __len__(self) -> int:
+        return len(self._batches)
 
 
 def _cfg_bool(value, default: bool = False) -> bool:
@@ -302,24 +335,58 @@ def run_training(config_path: str, mode_override: str = "") -> None:
     val_batch_size = int(train_cfg.get("val_batch_size", batch_size))
     num_workers = int(cfg["data"].get("num_workers", 0))
     val_num_workers = int(cfg["data"].get("val_num_workers", 0))
-    train_loader = DataLoader(
-        train_set,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=num_workers,
-        pin_memory=True,
-        persistent_workers=bool(num_workers > 0),
-        collate_fn=collator,
+    sample_patch_sequential = _cfg_bool(train_cfg.get("sample_patch_sequential", True), default=True)
+    val_sample_patch_sequential = _cfg_bool(
+        train_cfg.get("val_sample_patch_sequential", sample_patch_sequential),
+        default=sample_patch_sequential,
     )
-    val_loader = DataLoader(
-        val_set,
-        batch_size=val_batch_size,
-        shuffle=False,
-        num_workers=val_num_workers,
-        pin_memory=True,
-        persistent_workers=bool(val_num_workers > 0),
-        collate_fn=collator,
-    )
+    task_order = {name: idx for idx, name in enumerate(task_schemas.keys())}
+    if sample_patch_sequential:
+        train_loader = DataLoader(
+            train_set,
+            batch_sampler=SampleSequentialBatchSampler(
+                items=getattr(train_set, "items", []),
+                batch_size=batch_size,
+                task_order=task_order,
+            ),
+            num_workers=num_workers,
+            pin_memory=True,
+            persistent_workers=bool(num_workers > 0),
+            collate_fn=collator,
+        )
+    else:
+        train_loader = DataLoader(
+            train_set,
+            batch_size=batch_size,
+            shuffle=True,
+            num_workers=num_workers,
+            pin_memory=True,
+            persistent_workers=bool(num_workers > 0),
+            collate_fn=collator,
+        )
+    if val_sample_patch_sequential:
+        val_loader = DataLoader(
+            val_set,
+            batch_sampler=SampleSequentialBatchSampler(
+                items=getattr(val_set, "items", []),
+                batch_size=val_batch_size,
+                task_order=task_order,
+            ),
+            num_workers=val_num_workers,
+            pin_memory=True,
+            persistent_workers=bool(val_num_workers > 0),
+            collate_fn=collator,
+        )
+    else:
+        val_loader = DataLoader(
+            val_set,
+            batch_size=val_batch_size,
+            shuffle=False,
+            num_workers=val_num_workers,
+            pin_memory=True,
+            persistent_workers=bool(val_num_workers > 0),
+            collate_fn=collator,
+        )
 
     device = select_torch_device(prefer_cuda=True)
     model.to(device)
@@ -414,6 +481,11 @@ def run_training(config_path: str, mode_override: str = "") -> None:
     print(f"[Init] Trainable params={model.trainable_parameter_summary()}", flush=True)
     print(f"[Init] Output dir={out_dir}", flush=True)
     print(f"[Init] State update cfg={cfg.get('state_update', {})}", flush=True)
+    print(
+        f"[Init] Train order sample_patch_sequential={sample_patch_sequential} "
+        f"val_sample_patch_sequential={val_sample_patch_sequential}",
+        flush=True,
+    )
 
     for epoch in range(start_epoch, epochs + 1):
         if device.type == "cuda":
