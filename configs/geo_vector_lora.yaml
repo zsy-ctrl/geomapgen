@@ -10,7 +10,7 @@ data:
   label_relpaths:
     lane: label_check_crop/Lane.geojson
     intersection: label_check_crop/Intersection.geojson
-  image_size: ${UNIMAPGEN_IMAGE_SIZE:-448}
+  image_size: ${UNIMAPGEN_IMAGE_SIZE:-336}
   band_indices: [1, 2, 3]
   mask_threshold: 127
   crop_to_review_mask: true
@@ -43,7 +43,7 @@ serialization:
     lane:
       collection_name: Lane
       geometry_type: linestring
-      max_features: ${UNIMAPGEN_LANE_MAX_FEATURES:-0}
+      max_features: ${UNIMAPGEN_LANE_MAX_FEATURES:-64}
       min_points_per_feature: 2
       prompt_template: >
         Generate all lane instances present in the current patch as structured quantized coordinate tokens.
@@ -52,7 +52,7 @@ serialization:
     intersection:
       collection_name: Intersection
       geometry_type: polygon
-      max_features: ${UNIMAPGEN_INTERSECTION_MAX_FEATURES:-0}
+      max_features: ${UNIMAPGEN_INTERSECTION_MAX_FEATURES:-32}
       min_points_per_feature: 3
       prompt_template: >
         Generate all intersection polygons present in the current patch as structured quantized coordinate tokens.
@@ -68,14 +68,14 @@ prompt:
     No previous cut-point state anchors are available for this patch.
 
 text:
-  prompt_max_tokens: ${UNIMAPGEN_PROMPT_MAX_TOKENS:-0}
-  state_max_tokens: ${UNIMAPGEN_STATE_MAX_TOKENS:-0}
-  target_max_tokens: ${UNIMAPGEN_TARGET_MAX_TOKENS:-0}
+  prompt_max_tokens: ${UNIMAPGEN_PROMPT_MAX_TOKENS:-128}
+  state_max_tokens: ${UNIMAPGEN_STATE_MAX_TOKENS:-512}
+  target_max_tokens: ${UNIMAPGEN_TARGET_MAX_TOKENS:-1024}
 
 state_update:
   enabled: true
   border_margin_px: ${UNIMAPGEN_STATE_BORDER_MARGIN_PX:-128}
-  max_features: ${UNIMAPGEN_STATE_MAX_FEATURES:-32}
+  max_features: ${UNIMAPGEN_STATE_MAX_FEATURES:-16}
   anchor_max_points: ${UNIMAPGEN_STATE_ANCHOR_MAX_POINTS:-6}
 
 model:
@@ -88,7 +88,7 @@ model:
   sat_patch_size: 14
   sat_drop_cls_token: true
   sat_normalize_input: true
-  gradient_checkpointing: false
+  gradient_checkpointing: true
   lora:
     r: 16
     alpha: 32
@@ -117,7 +117,7 @@ train:
   weight_decay: 0.01
   warmup_steps: 32
   grad_clip_norm: 1.0
-  amp: false
+  amp: true
   save_latest: true
 
 decode:
