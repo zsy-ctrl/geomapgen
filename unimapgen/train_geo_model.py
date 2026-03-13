@@ -190,6 +190,7 @@ def run_val(
                 state_attention_mask=batch["state_attention_mask"].to(device),
                 map_input_ids=batch["map_input_ids"].to(device),
                 map_attention_mask=batch["map_attention_mask"].to(device),
+                return_logits=True,
             )
             total_loss += float(out["loss"].item()) * batch["image"].shape[0]
             total_count += batch["image"].shape[0]
@@ -417,6 +418,7 @@ def run_training(config_path: str, mode_override: str = "") -> None:
                     state_attention_mask=batch["state_attention_mask"].to(device),
                     map_input_ids=batch["map_input_ids"].to(device),
                     map_attention_mask=batch["map_attention_mask"].to(device),
+                    return_logits=False,
                 )
                 loss = out["loss"]
             scaler.scale(loss).backward()

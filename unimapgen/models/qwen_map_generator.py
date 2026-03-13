@@ -262,6 +262,7 @@ class QwenSatelliteMapGenerator(nn.Module):
         state_attention_mask: torch.Tensor,
         map_input_ids: torch.Tensor,
         map_attention_mask: torch.Tensor,
+        return_logits: bool = True,
     ) -> Dict[str, torch.Tensor]:
         prefix_embeds, prefix_mask = self.encode_prefix(
             image=image,
@@ -291,12 +292,17 @@ class QwenSatelliteMapGenerator(nn.Module):
             use_cache=False,
             return_dict=True,
         )
-        return {
-            "loss": outputs.loss,
-            "logits": outputs.logits,
+        loss = outputs.loss
+        logits = outputs.logits if bool(return_logits) else None
+        del outputs
+        result = {
+            "loss": loss,
             "labels": labels,
             "prefix_length": torch.tensor(prefix_embeds.shape[1], device=image.device, dtype=torch.long),
         }
+        if logits is not None:
+            result["logits"] = logits
+        return result
 
     def _build_position_ids(self, attention_mask: torch.Tensor) -> torch.Tensor:
         position_ids = attention_mask.long().cumsum(dim=-1) - 1
