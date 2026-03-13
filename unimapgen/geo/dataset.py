@@ -19,6 +19,7 @@ from .coord_sequence import (
 )
 from .errors import raise_geo_error
 from .geometry import (
+    ResizeContext,
     audit_tile_window_selection,
     apply_square_augment,
     annotate_tile_windows_with_mask,
@@ -32,7 +33,7 @@ from .geometry import (
     resample_feature_points,
     select_tile_windows,
 )
-from .io import geojson_to_pixel_features, load_geojson, read_binary_mask, read_raster_meta, read_rgb_geotiff
+from .io import RasterMeta, geojson_to_pixel_features, load_geojson, read_binary_mask, read_raster_meta, read_rgb_geotiff
 from .schema import TaskSchema
 
 
@@ -186,7 +187,11 @@ class GeoVectorDataset(Dataset):
         item = self.items[idx]
         base = self._load_or_build_cached_base(item=item)
         raster_meta = base["raster_meta"]
+        if isinstance(raster_meta, dict):
+            raster_meta = RasterMeta.from_dict(raster_meta)
         resize_ctx = base["resize_ctx"]
+        if isinstance(resize_ctx, dict):
+            resize_ctx = ResizeContext.from_dict(resize_ctx)
         image_chw = np.asarray(base["image_chw"], dtype=np.float32).copy()
         target_features_uv = self._clone_feature_records(base["target_features_uv"])
         state_features_uv = self._clone_feature_records(base["state_features_uv"])
