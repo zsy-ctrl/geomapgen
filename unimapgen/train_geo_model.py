@@ -692,7 +692,18 @@ def run_training(config_path: str, mode_override: str = "") -> None:
                 "tile": f"{int(batch['tile_indices'][0]) + 1}/{int(batch['tile_counts'][0])}",
             }
             pbar.set_postfix(**postfix)
-            if bool(artifact_cfg["enabled"]) and bool(artifact_cfg["save_train_batch_geojson"]):
+            if (
+                bool(artifact_cfg["enabled"])
+                and bool(artifact_cfg["save_train_batch_geojson"])
+                and exported_train_batches < max(0, int(artifact_cfg["max_batches_per_epoch"]))
+            ):
+                if bool(artifact_cfg.get("save_train_batch_predictions", False)):
+                    print(
+                        f"[Epoch {epoch}] Exporting train prediction snapshot "
+                        f"{exported_train_batches + 1}/{max(0, int(artifact_cfg['max_batches_per_epoch']))} "
+                        f"for sample={batch_sample_id} tile={int(batch['tile_indices'][0]) + 1}/{int(batch['tile_counts'][0])}",
+                        flush=True,
+                    )
                 exported = export_batch_geojson_snapshots(
                     cfg=cfg,
                     task_schemas=task_schemas,
@@ -707,6 +718,11 @@ def run_training(config_path: str, mode_override: str = "") -> None:
                     batch_index=int(batch_index),
                 )
                 exported_train_batches += 1
+                if bool(artifact_cfg.get("save_train_batch_predictions", False)):
+                    print(
+                        f"[Epoch {epoch}] Train prediction snapshot finished",
+                        flush=True,
+                    )
                 for record in exported:
                     epoch_raster_meta = record.get("raster_meta", epoch_raster_meta)
                     epoch_pred_features.setdefault(str(record["task_name"]), []).extend(record.get("feature_records", []))

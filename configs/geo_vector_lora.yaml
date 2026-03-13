@@ -142,7 +142,7 @@ artifact_export:
   save_val_batch_inputs: ${UNIMAPGEN_SAVE_VAL_BATCH_INPUTS:-true}
   save_train_batch_geojson: ${UNIMAPGEN_SAVE_TRAIN_BATCH_GEOJSON:-true}
   save_val_batch_geojson: ${UNIMAPGEN_SAVE_VAL_BATCH_GEOJSON:-true}
-  save_train_batch_predictions: ${UNIMAPGEN_SAVE_TRAIN_BATCH_PREDICTIONS:-true}
+  save_train_batch_predictions: ${UNIMAPGEN_SAVE_TRAIN_BATCH_PREDICTIONS:-false}
   save_val_batch_predictions: ${UNIMAPGEN_SAVE_VAL_BATCH_PREDICTIONS:-true}
   save_eval_sample_geojson: ${UNIMAPGEN_SAVE_EVAL_SAMPLE_GEOJSON:-true}
   save_predict_tile_geojson: ${UNIMAPGEN_SAVE_PREDICT_TILE_GEOJSON:-true}
