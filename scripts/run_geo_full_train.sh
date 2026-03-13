@@ -2,7 +2,7 @@
 set -euo pipefail
 
 CONFIG="configs/geo_vector_full.yaml"
-DATASET_ROOT=""
+DATASET_ROOT="/home/zsy/Downloads/dataset-extracted"
 DINO_MODEL_PATH=""
 QWEN_MODEL_PATH=""
 DEVICE=""

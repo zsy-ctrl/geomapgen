@@ -1,7 +1,7 @@
 seed: 42
 
 data:
-  dataset_root: ${UNIMAPGEN_GEO_ROOT:-data/geo_vector_dataset}
+  dataset_root: ${UNIMAPGEN_GEO_ROOT:-/home/zsy/Downloads/dataset-extracted}
   train_split: train
   val_split: val
   test_split: test

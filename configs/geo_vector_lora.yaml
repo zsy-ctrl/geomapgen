@@ -1,7 +1,7 @@
 seed: 42
 
 data:
-  dataset_root: ${UNIMAPGEN_GEO_ROOT:-data/geo_vector_dataset}
+  dataset_root: ${UNIMAPGEN_GEO_ROOT:-/home/zsy/Downloads/dataset-extracted}
   train_split: train
   val_split: val
   test_split: test
@@ -127,17 +127,21 @@ decode:
   use_kv_cache: ${UNIMAPGEN_USE_KV_CACHE:-true}
 
 artifact_export:
-  enabled: ${UNIMAPGEN_ARTIFACT_EXPORT_ENABLED:-false}
+  enabled: ${UNIMAPGEN_ARTIFACT_EXPORT_ENABLED:-true}
   save_kept_patches: ${UNIMAPGEN_SAVE_KEPT_PATCHES:-true}
   save_discarded_patches: ${UNIMAPGEN_SAVE_DISCARDED_PATCHES:-true}
   save_resized_patch_inputs: ${UNIMAPGEN_SAVE_RESIZED_PATCH_INPUTS:-true}
+  save_train_batch_inputs: ${UNIMAPGEN_SAVE_TRAIN_BATCH_INPUTS:-true}
+  save_val_batch_inputs: ${UNIMAPGEN_SAVE_VAL_BATCH_INPUTS:-true}
   save_train_batch_geojson: ${UNIMAPGEN_SAVE_TRAIN_BATCH_GEOJSON:-true}
   save_val_batch_geojson: ${UNIMAPGEN_SAVE_VAL_BATCH_GEOJSON:-true}
+  save_train_batch_predictions: ${UNIMAPGEN_SAVE_TRAIN_BATCH_PREDICTIONS:-false}
+  save_val_batch_predictions: ${UNIMAPGEN_SAVE_VAL_BATCH_PREDICTIONS:-false}
   save_eval_sample_geojson: ${UNIMAPGEN_SAVE_EVAL_SAMPLE_GEOJSON:-true}
   save_predict_tile_geojson: ${UNIMAPGEN_SAVE_PREDICT_TILE_GEOJSON:-true}
-  max_batches_per_epoch: ${UNIMAPGEN_ARTIFACT_MAX_BATCHES_PER_EPOCH:-0}
+  max_batches_per_epoch: ${UNIMAPGEN_ARTIFACT_MAX_BATCHES_PER_EPOCH:-1}
   max_samples_per_batch: ${UNIMAPGEN_ARTIFACT_MAX_SAMPLES_PER_BATCH:-1}
-  max_patch_images_per_sample: ${UNIMAPGEN_ARTIFACT_MAX_PATCH_IMAGES_PER_SAMPLE:-0}
+  max_patch_images_per_sample: ${UNIMAPGEN_ARTIFACT_MAX_PATCH_IMAGES_PER_SAMPLE:-1}
 
 evaluation:
   lane_match_distance_m: 2.0

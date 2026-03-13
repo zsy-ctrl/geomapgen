@@ -36,8 +36,12 @@ def get_artifact_export_cfg(cfg: Dict) -> Dict:
         "save_kept_patches": _as_bool(section.get("save_kept_patches", True), default=True),
         "save_discarded_patches": _as_bool(section.get("save_discarded_patches", True), default=True),
         "save_resized_patch_inputs": _as_bool(section.get("save_resized_patch_inputs", True), default=True),
+        "save_train_batch_inputs": _as_bool(section.get("save_train_batch_inputs", True), default=True),
+        "save_val_batch_inputs": _as_bool(section.get("save_val_batch_inputs", True), default=True),
         "save_train_batch_geojson": _as_bool(section.get("save_train_batch_geojson", True), default=True),
         "save_val_batch_geojson": _as_bool(section.get("save_val_batch_geojson", True), default=True),
+        "save_train_batch_predictions": _as_bool(section.get("save_train_batch_predictions", False), default=False),
+        "save_val_batch_predictions": _as_bool(section.get("save_val_batch_predictions", False), default=False),
         "save_eval_sample_geojson": _as_bool(section.get("save_eval_sample_geojson", True), default=True),
         "save_predict_tile_geojson": _as_bool(section.get("save_predict_tile_geojson", True), default=True),
         "max_batches_per_epoch": int(section.get("max_batches_per_epoch", 1)),
@@ -161,6 +165,9 @@ def export_batch_geojson_snapshots(
     if stage == "val" and not bool(artifact_cfg["save_val_batch_geojson"]):
         return
 
+    save_inputs = bool(artifact_cfg["save_train_batch_inputs"]) if stage == "train" else bool(artifact_cfg["save_val_batch_inputs"])
+    save_predictions = bool(artifact_cfg["save_train_batch_predictions"]) if stage == "train" else bool(artifact_cfg["save_val_batch_predictions"])
+
     max_samples = max(0, int(artifact_cfg["max_samples_per_batch"]))
     if max_samples == 0:
         return
@@ -189,77 +196,79 @@ def export_batch_geojson_snapshots(
             sample_out_dir = os.path.join(stage_out_dir, f"{sample_index:02d}_{sample_id}_{task_name}")
             ensure_dir(sample_out_dir)
 
-            raw_patch_path = os.path.join(sample_out_dir, "patch.png")
-            resized_patch_path = os.path.join(sample_out_dir, "patch.resized.png")
-            save_patch_preview(
-                image_path=str(batch["image_paths"][sample_index]),
-                band_indices=[int(x) for x in cfg["data"].get("band_indices", [1, 2, 3])],
-                crop_bbox=batch["crop_bboxes"][sample_index],
-                raw_output_path=raw_patch_path,
-                resized_output_path=resized_patch_path if artifact_cfg["save_resized_patch_inputs"] else None,
-                image_size=int(cfg["data"]["image_size"]),
-            )
-            save_text(os.path.join(sample_out_dir, "prompt.txt"), str(batch["prompt_texts"][sample_index]))
-            save_json(os.path.join(sample_out_dir, "state_items.json"), batch["state_items_list"][sample_index])
-            save_json(os.path.join(sample_out_dir, "target_items.json"), batch["target_items_list"][sample_index])
-
-            gt_features_abs = uv_items_to_abs_feature_records(
-                items=batch["target_items_list"][sample_index],
-                task_schema=task_schema,
-                resize_ctx=resize_ctx,
-            )
-            save_geojson_snapshot(
-                path=os.path.join(sample_out_dir, f"{task_schema.collection_name}.gt.geojson"),
-                task_schema=task_schema,
-                feature_records=gt_features_abs,
-                raster_meta=raster_meta,
-            )
-
-            with torch.inference_mode():
-                pred_ids = model.generate(
-                    image=batch["image"][sample_index : sample_index + 1].to(device),
-                    prompt_input_ids=batch["prompt_input_ids"][sample_index : sample_index + 1].to(device),
-                    prompt_attention_mask=batch["prompt_attention_mask"][sample_index : sample_index + 1].to(device),
-                    pv_images=None,
-                    state_input_ids=batch["state_input_ids"][sample_index : sample_index + 1].to(device),
-                    state_attention_mask=batch["state_attention_mask"][sample_index : sample_index + 1].to(device),
-                    max_new_tokens=int(decode_cfg.get("max_new_tokens", 512)),
-                    min_new_tokens=int(decode_cfg.get("min_new_tokens", 8)),
-                    temperature=float(decode_cfg.get("temperature", 1.0)),
-                    top_k=int(decode_cfg.get("top_k", 1)),
-                    repetition_penalty=float(decode_cfg.get("repetition_penalty", 1.0)),
-                    grammar_helper=text_tokenizer.build_map_grammar_helper(
-                        task_schema=task_schema,
-                        max_prop_tokens=int(decode_cfg.get("max_prop_tokens", 128)),
-                    ),
-                    use_kv_cache=_as_bool(decode_cfg.get("use_kv_cache", True), default=True),
-                    return_token_meta=False,
+            if save_inputs:
+                raw_patch_path = os.path.join(sample_out_dir, "patch.png")
+                resized_patch_path = os.path.join(sample_out_dir, "patch.resized.png")
+                save_patch_preview(
+                    image_path=str(batch["image_paths"][sample_index]),
+                    band_indices=[int(x) for x in cfg["data"].get("band_indices", [1, 2, 3])],
+                    crop_bbox=batch["crop_bboxes"][sample_index],
+                    raw_output_path=raw_patch_path,
+                    resized_output_path=resized_patch_path if artifact_cfg["save_resized_patch_inputs"] else None,
+                    image_size=int(cfg["data"]["image_size"]),
                 )
-            pred_token_ids = pred_ids[0].detach().cpu().tolist()
-            pred_items, decode_info = text_tokenizer.decode_map_items(
-                token_ids=pred_token_ids,
-                task_schema=task_schema,
-                image_size=int(cfg["data"]["image_size"]),
-            )
-            pred_features_abs = uv_items_to_abs_feature_records(
-                items=pred_items,
-                task_schema=task_schema,
-                resize_ctx=resize_ctx,
-            )
-            save_geojson_snapshot(
-                path=os.path.join(sample_out_dir, f"{task_schema.collection_name}.pred.geojson"),
-                task_schema=task_schema,
-                feature_records=pred_features_abs,
-                raster_meta=raster_meta,
-            )
-            save_json(
-                os.path.join(sample_out_dir, "prediction_debug.json"),
-                {
-                    "decode_info": decode_info,
-                    "token_ids": [int(x) for x in pred_token_ids],
-                    "pred_item_count": int(len(pred_items)),
-                },
-            )
+                save_text(os.path.join(sample_out_dir, "prompt.txt"), str(batch["prompt_texts"][sample_index]))
+                save_json(os.path.join(sample_out_dir, "state_items.json"), batch["state_items_list"][sample_index])
+                save_json(os.path.join(sample_out_dir, "target_items.json"), batch["target_items_list"][sample_index])
+
+                gt_features_abs = uv_items_to_abs_feature_records(
+                    items=batch["target_items_list"][sample_index],
+                    task_schema=task_schema,
+                    resize_ctx=resize_ctx,
+                )
+                save_geojson_snapshot(
+                    path=os.path.join(sample_out_dir, f"{task_schema.collection_name}.gt.geojson"),
+                    task_schema=task_schema,
+                    feature_records=gt_features_abs,
+                    raster_meta=raster_meta,
+                )
+
+            if save_predictions:
+                with torch.inference_mode():
+                    pred_ids = model.generate(
+                        image=batch["image"][sample_index : sample_index + 1].to(device),
+                        prompt_input_ids=batch["prompt_input_ids"][sample_index : sample_index + 1].to(device),
+                        prompt_attention_mask=batch["prompt_attention_mask"][sample_index : sample_index + 1].to(device),
+                        pv_images=None,
+                        state_input_ids=batch["state_input_ids"][sample_index : sample_index + 1].to(device),
+                        state_attention_mask=batch["state_attention_mask"][sample_index : sample_index + 1].to(device),
+                        max_new_tokens=int(decode_cfg.get("max_new_tokens", 512)),
+                        min_new_tokens=int(decode_cfg.get("min_new_tokens", 8)),
+                        temperature=float(decode_cfg.get("temperature", 1.0)),
+                        top_k=int(decode_cfg.get("top_k", 1)),
+                        repetition_penalty=float(decode_cfg.get("repetition_penalty", 1.0)),
+                        grammar_helper=text_tokenizer.build_map_grammar_helper(
+                            task_schema=task_schema,
+                            max_prop_tokens=int(decode_cfg.get("max_prop_tokens", 128)),
+                        ),
+                        use_kv_cache=_as_bool(decode_cfg.get("use_kv_cache", True), default=True),
+                        return_token_meta=False,
+                    )
+                pred_token_ids = pred_ids[0].detach().cpu().tolist()
+                pred_items, decode_info = text_tokenizer.decode_map_items(
+                    token_ids=pred_token_ids,
+                    task_schema=task_schema,
+                    image_size=int(cfg["data"]["image_size"]),
+                )
+                pred_features_abs = uv_items_to_abs_feature_records(
+                    items=pred_items,
+                    task_schema=task_schema,
+                    resize_ctx=resize_ctx,
+                )
+                save_geojson_snapshot(
+                    path=os.path.join(sample_out_dir, f"{task_schema.collection_name}.pred.geojson"),
+                    task_schema=task_schema,
+                    feature_records=pred_features_abs,
+                    raster_meta=raster_meta,
+                )
+                save_json(
+                    os.path.join(sample_out_dir, "prediction_debug.json"),
+                    {
+                        "decode_info": decode_info,
+                        "token_ids": [int(x) for x in pred_token_ids],
+                        "pred_item_count": int(len(pred_items)),
+                    },
+                )
     finally:
         if was_training:
             model.train()

@@ -1,5 +1,5 @@
 $Config = "configs/geo_vector_full.yaml"
-$DatasetRoot = ""
+$DatasetRoot = "/home/zsy/Downloads/dataset-extracted"
 $DinoModelPath = ""
 $QwenModelPath = ""
 $Device = ""
