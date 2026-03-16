@@ -78,6 +78,71 @@ def _count_sample_batches(items, batch_size: int) -> dict[str, int]:
     return out
 
 
+def _resolve_tile_audit_records(dataset_obj) -> list[dict]:
+    records = list(getattr(dataset_obj, "tile_audit_records", []) or [])
+    if records:
+        return records
+
+    items = list(getattr(dataset_obj, "items", []) or [])
+    if not items:
+        return []
+
+    fallback_records: list[dict] = []
+    seen_keys: set[tuple[str, tuple[int, int, int, int]]] = set()
+    for item in items:
+        sample_id = str(item.get("sample_id", "sample"))
+        sample_dir = str(item.get("sample_dir", ""))
+        image_path = str(item.get("image_path", ""))
+        tile_index = int(item.get("tile_index", 0))
+        tile_window = item.get("tile_window")
+        crop_bbox = item.get("crop_bbox")
+        if isinstance(tile_window, dict):
+            bbox = (
+                int(tile_window["x0"]),
+                int(tile_window["y0"]),
+                int(tile_window["x1"]),
+                int(tile_window["y1"]),
+            )
+            keep_bbox = (
+                int(tile_window.get("keep_x0", tile_window["x0"])),
+                int(tile_window.get("keep_y0", tile_window["y0"])),
+                int(tile_window.get("keep_x1", tile_window["x1"])),
+                int(tile_window.get("keep_y1", tile_window["y1"])),
+            )
+            mask_ratio = float(tile_window.get("mask_ratio", 0.0))
+            mask_pixels = int(tile_window.get("mask_pixels", 0))
+        elif crop_bbox is not None:
+            bbox = tuple(int(v) for v in crop_bbox)
+            keep_bbox = bbox
+            mask_ratio = 0.0
+            mask_pixels = 0
+        else:
+            continue
+
+        dedupe_key = (sample_id, bbox)
+        if dedupe_key in seen_keys:
+            continue
+        seen_keys.add(dedupe_key)
+        fallback_records.append(
+            {
+                "stage": str(getattr(getattr(dataset_obj, "cfg", None), "stage", "")),
+                "split": str(getattr(getattr(dataset_obj, "cfg", None), "split", "")),
+                "sample_id": sample_id,
+                "sample_dir": sample_dir,
+                "image_path": image_path,
+                "crop_bbox": None if crop_bbox is None else [int(v) for v in crop_bbox],
+                "candidate_index": int(tile_index),
+                "selected": True,
+                "reason": "dataset_item_fallback",
+                "bbox": [int(v) for v in bbox],
+                "keep_bbox": [int(v) for v in keep_bbox],
+                "mask_ratio": float(mask_ratio),
+                "mask_pixels": int(mask_pixels),
+            }
+        )
+    return fallback_records
+
+
 def _group_sample_indices(items, task_order: dict[str, int]) -> OrderedDict[str, list[int]]:
     grouped: OrderedDict[str, list[tuple[int, dict]]] = OrderedDict()
     for index, item in enumerate(items):
@@ -369,8 +434,14 @@ def run_training(config_path: str, mode_override: str = "") -> None:
     if bool(artifact_cfg["enabled"]):
         band_indices = [int(x) for x in cfg["data"].get("band_indices", [1, 2, 3])]
         image_size = int(cfg["data"]["image_size"])
+        train_audit_records = _resolve_tile_audit_records(train_set)
+        val_audit_records = _resolve_tile_audit_records(val_set)
+        if len(train_audit_records) == 0:
+            print("[Audit] train tile audit records are empty even after fallback", flush=True)
+        if len(val_audit_records) == 0:
+            print("[Audit] val tile audit records are empty even after fallback", flush=True)
         export_tile_audit_records(
-            audit_records=getattr(train_set, "tile_audit_records", []),
+            audit_records=train_audit_records,
             output_dir=os.path.join(out_dir, "artifacts", "train_patch_audit"),
             band_indices=band_indices,
             image_size=image_size,
@@ -380,7 +451,7 @@ def run_training(config_path: str, mode_override: str = "") -> None:
             max_patch_images_per_sample=int(artifact_cfg["max_patch_images_per_sample"]),
         )
         export_tile_audit_records(
-            audit_records=getattr(val_set, "tile_audit_records", []),
+            audit_records=val_audit_records,
             output_dir=os.path.join(out_dir, "artifacts", "val_patch_audit"),
             band_indices=band_indices,
             image_size=image_size,

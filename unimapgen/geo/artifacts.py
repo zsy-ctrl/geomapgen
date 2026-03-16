@@ -362,12 +362,28 @@ def export_batch_geojson_snapshots(
                         "decode_info": {
                             "parsed_geojson": bool(pred_geojson is not None),
                             "pred_feature_count": int(len(pred_features_abs)),
+                            "empty_feature_collection": bool(
+                                isinstance(pred_geojson, dict) and len(pred_geojson.get("features", []) or []) == 0
+                            ),
                         },
                         "token_ids": [int(x) for x in pred_token_ids],
                         "pred_text": pred_text,
                         "pred_item_count": int(len(pred_features_abs)),
                     },
                 )
+                if isinstance(pred_geojson, dict) and len(pred_geojson.get("features", []) or []) == 0:
+                    save_json(
+                        os.path.join(sample_out_dir, f"{task_schema.collection_name}.pred.empty.json"),
+                        {
+                            "reason": "model_generated_empty_feature_collection",
+                            "task_name": task_name,
+                            "sample_id": sample_id,
+                            "tile_index": int(batch["tile_indices"][sample_index]),
+                            "prompt_text": str(batch["prompt_texts"][sample_index]),
+                            "state_text": str(batch.get("state_texts", [""])[sample_index]),
+                            "pred_text": pred_text,
+                        },
+                    )
                 if device.type == "cuda":
                     torch.cuda.empty_cache()
     finally:
