@@ -67,6 +67,19 @@ def _format_raw_text_dump(task_name: str, tile_records) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
+def _resolve_positive_int(cli_value: int, cfg_value, fallback: int) -> int:
+    cli_int = int(cli_value)
+    if cli_int > 0:
+        return cli_int
+    try:
+        cfg_int = int(cfg_value)
+    except Exception:
+        cfg_int = 0
+    if cfg_int > 0:
+        return cfg_int
+    return int(fallback)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, required=True)
@@ -96,10 +109,10 @@ def main() -> None:
     ensure_dir(args.output_dir)
 
     dec_cfg = cfg.get("decode", {})
-    max_new_tokens = int(args.max_new_tokens or dec_cfg.get("max_new_tokens", 512))
-    min_new_tokens = int(args.min_new_tokens or dec_cfg.get("min_new_tokens", 8))
+    max_new_tokens = _resolve_positive_int(args.max_new_tokens, dec_cfg.get("max_new_tokens", 0), 64)
+    min_new_tokens = max(0, min(int(args.min_new_tokens), int(max_new_tokens))) if int(args.min_new_tokens) > 0 else 0
     temperature = float(args.temperature if args.temperature > 0 else dec_cfg.get("temperature", 1.0))
-    top_k = int(args.top_k or dec_cfg.get("top_k", 1))
+    top_k = _resolve_positive_int(args.top_k, dec_cfg.get("top_k", 1), 1)
     repetition_penalty = float(
         args.repetition_penalty if args.repetition_penalty > 0 else dec_cfg.get("repetition_penalty", 1.05)
     )
@@ -117,6 +130,11 @@ def main() -> None:
         sample_t0 = time.time()
         print(
             f"[Predict] sample {index}/{len(records)} id={record['sample_id']} image={record['image_path']}",
+            flush=True,
+        )
+        print(
+            f"[Predict] decode max_new_tokens={max_new_tokens} min_new_tokens={min_new_tokens} "
+            f"top_k={top_k} temperature={temperature} repetition_penalty={repetition_penalty}",
             flush=True,
         )
         sample_out_dir = os.path.join(args.output_dir, record["sample_id"])

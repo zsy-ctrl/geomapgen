@@ -108,6 +108,21 @@ fi
 if [[ "$MAX_SAMPLES" != "0" ]]; then
   args+=(--max_samples "$MAX_SAMPLES")
 fi
+if [[ -n "$MAX_NEW_TOKENS" ]]; then
+  args+=(--max_new_tokens "$MAX_NEW_TOKENS")
+fi
+if [[ -n "$MIN_NEW_TOKENS" ]]; then
+  args+=(--min_new_tokens "$MIN_NEW_TOKENS")
+fi
+if [[ -n "$TOP_K" ]]; then
+  args+=(--top_k "$TOP_K")
+fi
+if [[ -n "$TEMPERATURE" ]]; then
+  args+=(--temperature "$TEMPERATURE")
+fi
+if [[ -n "$REPETITION_PENALTY" ]]; then
+  args+=(--repetition_penalty "$REPETITION_PENALTY")
+fi
 if [[ "$VERBOSE_PROGRESS" == "true" ]]; then
   args+=(--verbose_progress)
 fi
