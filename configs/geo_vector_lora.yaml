@@ -49,6 +49,7 @@ serialization:
         Output valid Lane GeoJSON for this patch only.
         Keep only stable lane attributes and geometry.
         If lane geometry is visible in the current patch, do not return an empty features array.
+        Lane endpoints that meet an intersection must terminate exactly on the visible intersection boundary, with no overshoot and no gap.
     intersection:
       collection_name: Intersection
       geometry_type: polygon
@@ -58,6 +59,7 @@ serialization:
         Output valid Intersection GeoJSON for this patch only.
         Keep only stable intersection attributes and geometry.
         If intersection geometry is visible in the current patch, do not return an empty features array.
+        Intersection boundaries must exactly meet connected lane endpoints visible in the patch, with no overshoot and no gap.
 
 prompt:
   include_geospatial_context: ${UNIMAPGEN_PROMPT_INCLUDE_GEOSPATIAL_CONTEXT:-true}

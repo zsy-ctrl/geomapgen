@@ -437,9 +437,17 @@ def run_training(config_path: str, mode_override: str = "") -> None:
         train_audit_records = _resolve_tile_audit_records(train_set)
         val_audit_records = _resolve_tile_audit_records(val_set)
         if len(train_audit_records) == 0:
-            print("[Audit] train tile audit records are empty even after fallback", flush=True)
+            print(
+                "[Audit] train tile audit records are empty even after fallback "
+                f"(records={len(train_set)} items={len(getattr(train_set, 'items', []) or [])})",
+                flush=True,
+            )
         if len(val_audit_records) == 0:
-            print("[Audit] val tile audit records are empty even after fallback", flush=True)
+            print(
+                "[Audit] val tile audit records are empty even after fallback "
+                f"(records={len(val_set)} items={len(getattr(val_set, 'items', []) or [])} split={cfg['data']['val_split']})",
+                flush=True,
+            )
         export_tile_audit_records(
             audit_records=train_audit_records,
             output_dir=os.path.join(out_dir, "artifacts", "train_patch_audit"),
@@ -591,6 +599,12 @@ def run_training(config_path: str, mode_override: str = "") -> None:
     metrics_path = os.path.join(out_dir, "metrics.jsonl")
 
     print(f"[Init] Train records={len(train_set)} Val records={len(val_set)}", flush=True)
+    print(
+        f"[Init] Train items={len(getattr(train_set, 'items', []) or [])} "
+        f"Val items={len(getattr(val_set, 'items', []) or [])} "
+        f"train_split={cfg['data']['train_split']} val_split={cfg['data']['val_split']}",
+        flush=True,
+    )
     train_cache = getattr(train_set, "cache_stats", None)
     if isinstance(train_cache, dict):
         print(
@@ -795,6 +809,12 @@ def run_training(config_path: str, mode_override: str = "") -> None:
                 and bool(artifact_cfg["save_train_batch_geojson"])
                 and (max_train_batches_cfg <= 0 or exported_train_batches < max_train_batches_cfg)
             ):
+                print(
+                    f"[Epoch {epoch}] Preparing train artifact export "
+                    f"sample={batch_sample_id} tile={int(batch['tile_indices'][0]) + 1}/{int(batch['tile_counts'][0])} "
+                    f"save_predictions={bool(artifact_cfg.get('save_train_batch_predictions', False))}",
+                    flush=True,
+                )
                 if bool(artifact_cfg.get("save_train_batch_predictions", False)):
                     print(
                         f"[Epoch {epoch}] Exporting train prediction snapshot "
@@ -836,7 +856,7 @@ def run_training(config_path: str, mode_override: str = "") -> None:
                 "epoch": int(epoch),
                 "tasks": {},
             }
-            stitched_geojson_by_task = {}
+            stitched_records_by_task = {}
             for task_name, task_schema in task_schemas.items():
                 pred_records = epoch_pred_features.get(task_name, [])
                 stitched_records = deduplicate_feature_records(
@@ -846,15 +866,20 @@ def run_training(config_path: str, mode_override: str = "") -> None:
                     line_distance_threshold_m=float(cfg.get("postprocess", {}).get("line_dedup_distance_m", 1.0)),
                     polygon_iou_threshold=float(cfg.get("postprocess", {}).get("polygon_dedup_iou", 0.5)),
                 )
+                stitched_records_by_task[task_name] = stitched_records
+                stitched_summary["tasks"][task_name] = {
+                    "patch_pred_feature_count": int(len(pred_records)),
+                    "stitched_feature_count": int(len(stitched_records)),
+                }
+
+            stitched_geojson_by_task = {}
+            for task_name, task_schema in task_schemas.items():
+                stitched_records = stitched_records_by_task.get(task_name, [])
                 stitched_geojson_by_task[task_name] = pixel_features_to_geojson(
                     task_schema=task_schema,
                     feature_records=stitched_records,
                     raster_meta=epoch_raster_meta,
                 )
-                stitched_summary["tasks"][task_name] = {
-                    "patch_pred_feature_count": int(len(pred_records)),
-                    "stitched_feature_count": int(len(stitched_records)),
-                }
             stitched_geojson_by_task = assign_incremental_feature_ids(stitched_geojson_by_task)
             for task_name, task_schema in task_schemas.items():
                 geojson_dict = stitched_geojson_by_task.get(task_name)
@@ -869,7 +894,7 @@ def run_training(config_path: str, mode_override: str = "") -> None:
                         geojson_dumps(
                             pixel_features_to_uv_geojson(
                                 task_schema=task_schema,
-                                feature_records=stitched_records,
+                                feature_records=stitched_records_by_task.get(task_name, []),
                                 resize_ctx=build_resize_context(
                                     width=int(epoch_raster_meta.width),
                                     height=int(epoch_raster_meta.height),

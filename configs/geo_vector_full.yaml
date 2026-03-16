@@ -49,6 +49,7 @@ serialization:
         Output patch-local lane text for the current patch.
         Learn lane field names, values, and multi-feature formatting from supervision. The final GeoJSON object must be a valid Lane FeatureCollection.
         The features array may contain zero, one, or many lane Features. Do not assume a fixed lane count.
+        Lane endpoints that meet an intersection must terminate exactly on the visible intersection boundary, with no overshoot and no gap.
         Do not explain anything. Do not use markdown.
     intersection:
       collection_name: Intersection
@@ -60,6 +61,7 @@ serialization:
         Learn intersection field names, values, and multi-feature formatting from supervision. The final GeoJSON object must be a valid Intersection FeatureCollection.
         The features array may contain zero, one, or many intersection Features. Do not assume a fixed intersection count.
         Polygon coordinates must be valid GeoJSON rings and each ring must be closed, with identical first and last coordinates.
+        Intersection boundaries must exactly meet connected lane endpoints visible in the patch, with no overshoot and no gap.
         Do not explain anything. Do not use markdown.
 
 prompt:

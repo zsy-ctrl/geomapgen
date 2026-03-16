@@ -38,6 +38,7 @@ from .io import (
     read_binary_mask,
     read_raster_meta,
     read_rgb_geotiff,
+    strip_non_training_fields_from_feature_collection,
     uv_geojson_to_pixel_features,
 )
 
@@ -62,6 +63,8 @@ def prompt_text_for_task(
     has_state: bool,
     raster_meta,
     crop_bbox: Optional[Sequence[int]],
+    companion_task_name: str = "",
+    companion_geojson_text: str = "",
 ) -> str:
     prompt_cfg = cfg.get("prompt", {})
     return build_task_prompt_text(
@@ -84,7 +87,30 @@ def prompt_text_for_task(
         crop_bbox=crop_bbox,
         include_geospatial_context=_as_bool(prompt_cfg.get("include_geospatial_context", True), default=True),
         geospatial_precision=int(prompt_cfg.get("geospatial_precision", 3)),
+        companion_task_name=str(companion_task_name),
+        companion_geojson_text=str(companion_geojson_text),
     )
+
+
+def _paired_task_name(task_name: str, task_schemas: Dict[str, TaskSchema]) -> str:
+    key = str(task_name).strip().lower()
+    if key == "lane" and "intersection" in task_schemas:
+        return "intersection"
+    if key == "intersection" and "lane" in task_schemas:
+        return "lane"
+    return ""
+
+
+def _ordered_task_names(task_schemas: Dict[str, TaskSchema]) -> List[str]:
+    preferred = ["intersection", "lane"]
+    ordered: List[str] = []
+    seen = set()
+    for name in preferred + list(task_schemas.keys()):
+        key = str(name).strip().lower()
+        if key in task_schemas and key not in seen:
+            ordered.append(key)
+            seen.add(key)
+    return ordered
 
 
 def _infer_sample_dir_from_image(cfg: Dict, image_path: str) -> str:
@@ -496,7 +522,8 @@ def run_tiled_sample_prediction(
     parse_stats: Dict[str, Dict[str, float]] = {}
     raw_outputs: Dict[str, List[Dict]] = {}
 
-    for task_name, task_schema in task_schemas.items():
+    for task_name in _ordered_task_names(task_schemas):
+        task_schema = task_schemas[task_name]
         task_t0 = time.time()
         task_state_memory: List[Dict] = []
         kept_predictions: List[Dict] = []
@@ -570,15 +597,49 @@ def run_tiled_sample_prediction(
                 anchor_max_points=state_anchor_max_points,
             )
             has_state = bool(state_items)
-            prompt_ids = text_tokenizer.encode_prompt(
-                prompt_text_for_task(
-                    cfg=cfg,
-                    task_schema=task_schema,
-                    task_name=task_name,
-                    has_state=has_state,
-                    raster_meta=raster_meta,
-                    crop_bbox=crop_bbox,
+            companion_task_name = _paired_task_name(task_name, task_schemas)
+            companion_geojson_text = ""
+            companion_feature_count = 0
+            if companion_task_name and companion_task_name in task_predictions:
+                companion_task_schema = task_schemas[companion_task_name]
+                companion_bbox = (
+                    crop_bbox
+                    if crop_bbox is not None
+                    else (0, 0, int(raster_meta.width), int(raster_meta.height))
                 )
+                companion_features_abs = _collect_state_features(
+                    state_memory=task_predictions.get(companion_task_name, []),
+                    task_schema=companion_task_schema,
+                    crop_bbox=crop_bbox,
+                    raster_meta=raster_meta,
+                    state_region_bboxes=[tuple(int(v) for v in companion_bbox)],
+                    sample_interval_meter=float(sample_interval_meter) if sample_interval_meter is not None else None,
+                    max_features=int(companion_task_schema.max_features),
+                )
+                companion_feature_count = int(len(companion_features_abs))
+                if companion_features_abs:
+                    companion_geojson_uv = pixel_features_to_uv_geojson(
+                        task_schema=companion_task_schema,
+                        feature_records=companion_features_abs,
+                        resize_ctx=resize_ctx,
+                    )
+                    companion_geojson_train = strip_non_training_fields_from_feature_collection(
+                        companion_geojson_uv,
+                        task_schema=companion_task_schema,
+                    )
+                    companion_geojson_text = geojson_dumps_compact(companion_geojson_train)
+            prompt_text = prompt_text_for_task(
+                cfg=cfg,
+                task_schema=task_schema,
+                task_name=task_name,
+                has_state=has_state,
+                raster_meta=raster_meta,
+                crop_bbox=crop_bbox,
+                companion_task_name=str(getattr(task_schemas.get(companion_task_name, None), "collection_name", "")),
+                companion_geojson_text=companion_geojson_text,
+            )
+            prompt_ids = text_tokenizer.encode_prompt(
+                prompt_text
             )
             prompt_input_ids = torch.tensor(prompt_ids, dtype=torch.long, device=device).unsqueeze(0)
             prompt_attention_mask = torch.ones_like(prompt_input_ids, dtype=torch.long)
@@ -614,7 +675,8 @@ def run_tiled_sample_prediction(
                     f"{prefix}task={task_name} tile={tile_index + 1}/{len(tile_windows)} "
                     f"crop_bbox={crop_bbox} keep_bbox={keep_bbox} "
                     f"state_anchors={len(state_items)} prompt_tokens={prompt_input_ids.shape[1]} "
-                    f"state_tokens={state_input_ids.shape[1]} max_new_tokens={max_new_tokens} "
+                    f"state_tokens={state_input_ids.shape[1]} companion_features={companion_feature_count} "
+                    f"max_new_tokens={max_new_tokens} "
                     f"io_sec={io_sec:.2f} state_sec={state_sec:.2f}",
                     flush=True,
                 )
@@ -685,9 +747,11 @@ def run_tiled_sample_prediction(
                     "state_anchor_count": int(len(state_items)),
                     "prompt_token_count": int(prompt_input_ids.shape[1]),
                     "state_token_count": int(state_input_ids.shape[1]),
+                    "companion_task_name": str(companion_task_name),
+                    "companion_feature_count": int(companion_feature_count),
                     "max_new_tokens": int(max_new_tokens),
                     "min_new_tokens": int(min_new_tokens),
-                    "prompt_text": str(text_tokenizer.decode_text(prompt_ids)),
+                    "prompt_text": str(prompt_text),
                     "state_text": str(state_text),
                     "generate_sec": float(gen_sec),
                     "parse_sec": float(parse_sec),
@@ -772,6 +836,7 @@ def run_tiled_sample_prediction(
         ),
         "parse_stats": parse_stats,
         "raw_outputs": raw_outputs,
+        "alignment_stats": alignment_stats,
     }
     if log_progress:
         prefix = f"[Infer] {progress_label} " if progress_label else "[Infer] "

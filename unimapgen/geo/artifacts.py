@@ -287,6 +287,19 @@ def export_batch_geojson_snapshots(
                     feature_records=cut_features_abs,
                     raster_meta=raster_meta,
                 )
+                companion_task_name = str(batch.get("companion_task_names", [""])[sample_index]).strip()
+                if companion_task_name and companion_task_name in task_schemas:
+                    companion_task_schema = task_schemas[companion_task_name]
+                    companion_uv_geojson = batch.get("companion_uv_geojsons", [{}])[sample_index]
+                    companion_world_geojson = batch.get("companion_world_geojsons", [{}])[sample_index]
+                    save_text(
+                        os.path.join(sample_out_dir, f"{companion_task_schema.collection_name}.ref.uv.geojson"),
+                        geojson_dumps(companion_uv_geojson),
+                    )
+                    save_text(
+                        os.path.join(sample_out_dir, f"{companion_task_schema.collection_name}.ref.geojson"),
+                        geojson_dumps(companion_world_geojson),
+                    )
 
             if save_predictions:
                 if device.type == "cuda":
@@ -497,6 +510,8 @@ def export_prediction_tile_geojsons(
                     "pred_feature_count": tile_record.get("pred_feature_count", 0),
                     "kept_feature_count": tile_record.get("kept_feature_count", 0),
                     "state_anchor_count": tile_record.get("state_anchor_count", 0),
+                    "companion_task_name": tile_record.get("companion_task_name", ""),
+                    "companion_feature_count": tile_record.get("companion_feature_count", 0),
                     "prompt_token_count": tile_record.get("prompt_token_count", 0),
                     "state_token_count": tile_record.get("state_token_count", 0),
                     "max_new_tokens": tile_record.get("max_new_tokens", 0),

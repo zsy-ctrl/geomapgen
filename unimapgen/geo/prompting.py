@@ -25,6 +25,40 @@ _INTERSECTION_EXAMPLE = (
 )
 
 
+def _topology_constraint_text(task_key: str) -> str:
+    key = str(task_key).strip().lower()
+    if key == "lane":
+        return (
+            "Lane endpoints that meet an intersection must terminate exactly on the visible "
+            "intersection boundary. Do not overshoot past the boundary and do not leave a gap."
+        )
+    if key == "intersection":
+        return (
+            "Intersection boundaries must exactly meet connected lane endpoints visible in the "
+            "patch. Do not overshoot and do not leave gaps at touching locations."
+        )
+    return ""
+
+
+def _companion_reference_text(task_key: str, companion_task_name: str, companion_geojson_text: str) -> str:
+    companion_name = str(companion_task_name).strip()
+    geojson_text = str(companion_geojson_text).strip()
+    if not companion_name or not geojson_text:
+        return ""
+    key = str(task_key).strip().lower()
+    if key == "lane":
+        return (
+            f"Reference {companion_name}.uv.geojson for the same patch: {geojson_text} "
+            "Use it to keep lane endpoints exactly attached to visible intersection boundaries."
+        )
+    if key == "intersection":
+        return (
+            f"Reference {companion_name}.uv.geojson for the same patch: {geojson_text} "
+            "Use it to keep intersection boundaries exactly attached to visible connected lane endpoints."
+        )
+    return f"Reference {companion_name}.uv.geojson for the same patch: {geojson_text}"
+
+
 def _fmt_float(value: float, precision: int) -> str:
     return f"{float(value):.{max(0, int(precision))}f}"
 
@@ -60,6 +94,8 @@ def build_task_prompt_text(
     crop_bbox: Optional[Sequence[int]],
     include_geospatial_context: bool = True,
     geospatial_precision: int = 3,
+    companion_task_name: str = "",
+    companion_geojson_text: str = "",
 ) -> str:
     parts = []
     if bool(include_geospatial_context):
@@ -76,6 +112,12 @@ def build_task_prompt_text(
     elif task_key == "intersection":
         parts.append(_INTERSECTION_EXAMPLE)
     parts.append(str(base_prompt).strip())
+    topology_text = _topology_constraint_text(task_key)
+    if topology_text:
+        parts.append(topology_text)
+    companion_text = _companion_reference_text(task_key, companion_task_name, companion_geojson_text)
+    if companion_text:
+        parts.append(companion_text)
     parts.append(
         "Output only the final GeoJSON FeatureCollection text. "
         "Do not output commentary or markdown. "

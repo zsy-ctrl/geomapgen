@@ -194,6 +194,14 @@ class GeoVectorDataset(Dataset):
     def __len__(self) -> int:
         return len(self.items)
 
+    def _paired_task_name(self, task_name: str) -> Optional[str]:
+        key = str(task_name).strip().lower()
+        if key == "lane" and "intersection" in self.task_schemas:
+            return "intersection"
+        if key == "intersection" and "lane" in self.task_schemas:
+            return "lane"
+        return None
+
     def __getitem__(self, idx: int) -> Dict:
 
 
@@ -209,6 +217,9 @@ class GeoVectorDataset(Dataset):
         image_chw = np.asarray(base["image_chw"], dtype=np.float32).copy()
         target_features_uv = self._clone_feature_records(base["target_features_uv"])
         state_features_uv = self._clone_feature_records(base["state_features_uv"])
+        companion_task_name = str(base.get("companion_task_name", "")).strip()
+        companion_features_uv = self._clone_feature_records(base.get("companion_features_uv", []))
+        companion_task_schema = self.task_schemas.get(companion_task_name) if companion_task_name else None
 
         if bool(self.cfg.train_augment):
             rot_k, hflip, vflip = self._sample_augment_params()
@@ -239,17 +250,6 @@ class GeoVectorDataset(Dataset):
             image_size=int(self.cfg.image_size),
             anchor_max_points=int(self.cfg.state_anchor_max_points),
         )
-        prompt_text = build_task_prompt_text(
-            task_name=item["task_name"],
-            base_prompt=item["task_schema"].prompt_template,
-            has_state=bool(self.cfg.state_enabled and state_items),
-            with_state_suffix=self.cfg.prompt_with_state,
-            without_state_suffix=self.cfg.prompt_without_state,
-            raster_meta=raster_meta,
-            crop_bbox=item["crop_bbox"],
-            include_geospatial_context=bool(self.cfg.prompt_include_geospatial_context),
-            geospatial_precision=int(self.cfg.prompt_geospatial_precision),
-        )
         state_geojson = pixel_features_to_geojson(
             task_schema=item["task_schema"],
             feature_records=self._feature_records_from_uv(state_features_uv, resize_ctx=resize_ctx),
@@ -272,6 +272,38 @@ class GeoVectorDataset(Dataset):
         )
         state_geojson_train = strip_non_training_fields_from_feature_collection(state_geojson_uv, task_schema=item["task_schema"])
         target_geojson_train = strip_non_training_fields_from_feature_collection(target_geojson_uv, task_schema=item["task_schema"])
+        companion_geojson = {}
+        companion_geojson_uv = {}
+        if companion_task_schema is not None:
+            companion_feature_records = self._feature_records_from_uv(companion_features_uv, resize_ctx=resize_ctx)
+            companion_geojson = pixel_features_to_geojson(
+                task_schema=companion_task_schema,
+                feature_records=companion_feature_records,
+                raster_meta=raster_meta,
+            )
+            companion_geojson_uv = pixel_features_to_uv_geojson(
+                task_schema=companion_task_schema,
+                feature_records=companion_feature_records,
+                resize_ctx=resize_ctx,
+            )
+        companion_geojson_train = (
+            strip_non_training_fields_from_feature_collection(companion_geojson_uv, task_schema=companion_task_schema)
+            if companion_task_schema is not None
+            else {}
+        )
+        prompt_text = build_task_prompt_text(
+            task_name=item["task_name"],
+            base_prompt=item["task_schema"].prompt_template,
+            has_state=bool(self.cfg.state_enabled and state_items),
+            with_state_suffix=self.cfg.prompt_with_state,
+            without_state_suffix=self.cfg.prompt_without_state,
+            raster_meta=raster_meta,
+            crop_bbox=item["crop_bbox"],
+            include_geospatial_context=bool(self.cfg.prompt_include_geospatial_context),
+            geospatial_precision=int(self.cfg.prompt_geospatial_precision),
+            companion_task_name=str(getattr(companion_task_schema, "collection_name", "")),
+            companion_geojson_text=geojson_dumps_compact(companion_geojson_train) if companion_geojson_train else "",
+        )
         state_text = build_state_text(
             task_schema=item["task_schema"],
             state_items=state_items,
@@ -301,6 +333,9 @@ class GeoVectorDataset(Dataset):
             "target_uv_geojson": target_geojson_uv,
             "state_world_geojson": state_geojson,
             "target_world_geojson": target_geojson,
+            "companion_task_name": companion_task_name,
+            "companion_uv_geojson": companion_geojson_uv,
+            "companion_world_geojson": companion_geojson,
             "raster_meta": raster_meta.to_dict(),
             "resize_ctx": resize_ctx.to_dict(),
             "review_mask_path": item["review_mask_path"],
@@ -342,6 +377,8 @@ class GeoVectorDataset(Dataset):
                 "resize_ctx": dict(cached["resize_ctx"]),
                 "target_features_uv": self._deserialize_feature_records(cached.get("target_features_uv", [])),
                 "state_features_uv": self._deserialize_feature_records(cached.get("state_features_uv", [])),
+                "companion_task_name": str(cached.get("companion_task_name", "")).strip(),
+                "companion_features_uv": self._deserialize_feature_records(cached.get("companion_features_uv", [])),
             }
         if bool(self.cfg.cache_enabled):
             self.cache_runtime_misses += 1
@@ -396,8 +433,25 @@ class GeoVectorDataset(Dataset):
             state_bboxes=state_bboxes,
             max_features=int(self.cfg.state_max_features),
         )
+        companion_task_name = self._paired_task_name(item["task_name"])
+        companion_features_abs: List[Dict] = []
+        if companion_task_name:
+            companion_task_schema = self.task_schemas.get(companion_task_name)
+            companion_key = f"{item['sample_id']}::{companion_task_name}"
+            companion_raw_features = self.features_by_key.get(companion_key, [])
+            if companion_task_schema is not None and companion_raw_features:
+                companion_features_abs = self._prepare_features(
+                    raw_features=companion_raw_features,
+                    task_schema=companion_task_schema,
+                    crop_bbox=item["crop_bbox"],
+                    raster_meta=raster_meta,
+                    review_mask=review_mask,
+                    state_bboxes=None,
+                    max_features=int(companion_task_schema.max_features),
+                )
         target_features_uv = self._feature_records_to_uv(feature_records=target_features_abs, resize_ctx=resize_ctx)
         state_features_uv = self._feature_records_to_uv(feature_records=state_features_abs, resize_ctx=resize_ctx)
+        companion_features_uv = self._feature_records_to_uv(feature_records=companion_features_abs, resize_ctx=resize_ctx)
 
         if bool(self.cfg.cache_write_enabled) and cache_path:
             ensure_dir(os.path.dirname(cache_path))
@@ -408,6 +462,8 @@ class GeoVectorDataset(Dataset):
                     "resize_ctx": resize_ctx.to_dict(),
                     "target_features_uv": self._serialize_feature_records(target_features_uv),
                     "state_features_uv": self._serialize_feature_records(state_features_uv),
+                    "companion_task_name": str(companion_task_name or ""),
+                    "companion_features_uv": self._serialize_feature_records(companion_features_uv),
                 },
                 cache_path,
             )
@@ -418,6 +474,8 @@ class GeoVectorDataset(Dataset):
             "resize_ctx": resize_ctx.to_dict(),
             "target_features_uv": self._clone_feature_records(target_features_uv),
             "state_features_uv": self._clone_feature_records(state_features_uv),
+            "companion_task_name": str(companion_task_name or ""),
+            "companion_features_uv": self._clone_feature_records(companion_features_uv),
         }
 
     def _summarize_cache_stats(self) -> Dict[str, object]:
@@ -1216,6 +1274,9 @@ class GeoVectorCollator:
             "target_uv_geojsons": [b.get("target_uv_geojson", {}) for b in batch],
             "state_world_geojsons": [b.get("state_world_geojson", {}) for b in batch],
             "target_world_geojsons": [b.get("target_world_geojson", {}) for b in batch],
+            "companion_task_names": [b.get("companion_task_name", "") for b in batch],
+            "companion_uv_geojsons": [b.get("companion_uv_geojson", {}) for b in batch],
+            "companion_world_geojsons": [b.get("companion_world_geojson", {}) for b in batch],
             "raster_metas": [b["raster_meta"] for b in batch],
             "resize_ctxs": [b["resize_ctx"] for b in batch],
             "review_mask_paths": [b["review_mask_path"] for b in batch],
