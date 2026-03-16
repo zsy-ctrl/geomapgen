@@ -388,15 +388,38 @@ def export_prediction_tile_geojsons(
         return
 
     ensure_dir(output_dir)
-    export_tile_audit_records(
-        audit_records=[
+    audit_records = [
+        {
+            "sample_id": str(sample_id),
+            "image_path": str(image_path),
+            **record,
+        }
+        for record in pred_result.get("tile_audit", [])
+    ]
+    if not audit_records:
+        tile_windows = pred_result.get("tile_windows", []) or []
+        audit_records = [
             {
                 "sample_id": str(sample_id),
                 "image_path": str(image_path),
-                **record,
+                "candidate_index": int(tile_index),
+                "selected": True,
+                "reason": "predict_tile_window",
+                "bbox": [int(tile_window["x0"]), int(tile_window["y0"]), int(tile_window["x1"]), int(tile_window["y1"])],
+                "keep_bbox": [
+                    int(tile_window["keep_x0"]),
+                    int(tile_window["keep_y0"]),
+                    int(tile_window["keep_x1"]),
+                    int(tile_window["keep_y1"]),
+                ],
+                "mask_ratio": float(tile_window.get("mask_ratio", 0.0)),
+                "mask_pixels": int(tile_window.get("mask_pixels", 0)),
             }
-            for record in pred_result.get("tile_audit", [])
-        ],
+            for tile_index, tile_window in enumerate(tile_windows)
+            if isinstance(tile_window, dict)
+        ]
+    export_tile_audit_records(
+        audit_records=audit_records,
         output_dir=os.path.join(output_dir, "patch_audit"),
         band_indices=[int(x) for x in cfg["data"].get("band_indices", [1, 2, 3])],
         image_size=int(cfg["data"]["image_size"]),
@@ -408,9 +431,13 @@ def export_prediction_tile_geojsons(
 
     tiles_out_dir = os.path.join(output_dir, "tile_geojson")
     ensure_dir(tiles_out_dir)
+    tile_debug_out_dir = os.path.join(output_dir, "tile_debug")
+    ensure_dir(tile_debug_out_dir)
     for task_name, tile_records in pred_result.get("raw_outputs", {}).items():
         task_out_dir = os.path.join(tiles_out_dir, str(task_name))
         ensure_dir(task_out_dir)
+        task_debug_out_dir = os.path.join(tile_debug_out_dir, str(task_name))
+        ensure_dir(task_debug_out_dir)
         for tile_record in tile_records:
             tile_index = int(tile_record.get("tile_index", 0))
             pred_geojson = tile_record.get("pred_geojson")
@@ -442,6 +469,30 @@ def export_prediction_tile_geojsons(
                     os.path.join(task_out_dir, f"tile_{tile_index:04d}.kept.geojson"),
                     geojson_dumps(kept_geojson),
                 )
+            save_json(
+                os.path.join(task_debug_out_dir, f"tile_{tile_index:04d}.debug.json"),
+                {
+                    "tile_index": tile_index,
+                    "crop_bbox": tile_record.get("crop_bbox"),
+                    "keep_bbox": tile_record.get("keep_bbox"),
+                    "mask_ratio": tile_record.get("mask_ratio", 0.0),
+                    "mask_pixels": tile_record.get("mask_pixels", 0),
+                    "decoded_ok": tile_record.get("decoded_ok", False),
+                    "pred_feature_count": tile_record.get("pred_feature_count", 0),
+                    "kept_feature_count": tile_record.get("kept_feature_count", 0),
+                    "state_anchor_count": tile_record.get("state_anchor_count", 0),
+                    "prompt_token_count": tile_record.get("prompt_token_count", 0),
+                    "state_token_count": tile_record.get("state_token_count", 0),
+                    "max_new_tokens": tile_record.get("max_new_tokens", 0),
+                    "min_new_tokens": tile_record.get("min_new_tokens", 0),
+                    "generate_sec": tile_record.get("generate_sec", 0.0),
+                    "parse_sec": tile_record.get("parse_sec", 0.0),
+                    "keep_sec": tile_record.get("keep_sec", 0.0),
+                    "prompt_text": tile_record.get("prompt_text", ""),
+                    "state_text": tile_record.get("state_text", ""),
+                    "pred_text": tile_record.get("pred_text", ""),
+                },
+            )
 
 
 def export_eval_sample_geojsons(

@@ -110,7 +110,10 @@ def main() -> None:
 
     dec_cfg = cfg.get("decode", {})
     max_new_tokens = _resolve_positive_int(args.max_new_tokens, dec_cfg.get("max_new_tokens", 0), 64)
-    min_new_tokens = max(0, min(int(args.min_new_tokens), int(max_new_tokens))) if int(args.min_new_tokens) > 0 else 0
+    if int(args.min_new_tokens) > 0:
+        min_new_tokens = max(0, min(int(args.min_new_tokens), int(max_new_tokens)))
+    else:
+        min_new_tokens = max(0, min(_resolve_positive_int(0, dec_cfg.get("min_new_tokens", 0), 16), int(max_new_tokens)))
     temperature = float(args.temperature if args.temperature > 0 else dec_cfg.get("temperature", 1.0))
     top_k = _resolve_positive_int(args.top_k, dec_cfg.get("top_k", 1), 1)
     repetition_penalty = float(

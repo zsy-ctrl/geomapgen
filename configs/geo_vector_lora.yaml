@@ -48,6 +48,7 @@ serialization:
       prompt_template: >
         Output valid Lane GeoJSON for this patch only.
         Keep only stable lane attributes and geometry.
+        If lane geometry is visible in the current patch, do not return an empty features array.
     intersection:
       collection_name: Intersection
       geometry_type: polygon
@@ -56,6 +57,7 @@ serialization:
       prompt_template: >
         Output valid Intersection GeoJSON for this patch only.
         Keep only stable intersection attributes and geometry.
+        If intersection geometry is visible in the current patch, do not return an empty features array.
 
 prompt:
   include_geospatial_context: ${UNIMAPGEN_PROMPT_INCLUDE_GEOSPATIAL_CONTEXT:-true}
@@ -121,7 +123,7 @@ train:
 
 decode:
   max_new_tokens: ${UNIMAPGEN_MAX_NEW_TOKENS:-128}
-  min_new_tokens: ${UNIMAPGEN_MIN_NEW_TOKENS:-0}
+  min_new_tokens: ${UNIMAPGEN_MIN_NEW_TOKENS:-16}
   max_prop_tokens: ${UNIMAPGEN_MAX_PROP_TOKENS:-0}
   temperature: ${UNIMAPGEN_TEMPERATURE:-1.0}
   top_k: ${UNIMAPGEN_TOP_K:-1}
