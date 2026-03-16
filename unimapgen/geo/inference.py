@@ -471,6 +471,7 @@ def run_tiled_sample_prediction(
     progress_label: str = "",
     log_progress: bool = False,
 ) -> Dict:
+    total_t0 = time.time()
     raster_meta = read_raster_meta(image_path)
     tile_windows, tile_neighbors, review_mask, tile_audit = _build_tile_windows_for_inference(
         cfg=cfg,
@@ -478,6 +479,12 @@ def run_tiled_sample_prediction(
         raster_meta=raster_meta,
         stage=stage,
     )
+    if log_progress:
+        prefix = f"[Infer] {progress_label} " if progress_label else "[Infer] "
+        print(
+            f"{prefix}tiling_ready tile_count={len(tile_windows)} audit_count={len(tile_audit)}",
+            flush=True,
+        )
     state_cfg = cfg.get("state_update", {})
     border_margin_px = int(state_cfg.get("border_margin_px", 128))
     state_max_features = int(state_cfg.get("max_features", 32))
@@ -489,6 +496,7 @@ def run_tiled_sample_prediction(
     raw_outputs: Dict[str, List[Dict]] = {}
 
     for task_name, task_schema in task_schemas.items():
+        task_t0 = time.time()
         task_state_memory: List[Dict] = []
         kept_predictions: List[Dict] = []
         raw_task_outputs: List[Dict] = []
@@ -503,6 +511,7 @@ def run_tiled_sample_prediction(
         }
 
         for tile_index, tile_window in enumerate(tile_windows):
+            tile_t0 = time.time()
             crop_bbox = None
             keep_bbox = None
             if tile_window is not None:
@@ -519,6 +528,7 @@ def run_tiled_sample_prediction(
                     int(tile_window["keep_y1"]),
                 )
 
+            io_t0 = time.time()
             image_hwc, _ = read_rgb_geotiff(
                 path=image_path,
                 band_indices=[int(x) for x in cfg["data"].get("band_indices", [1, 2, 3])],
@@ -532,8 +542,10 @@ def run_tiled_sample_prediction(
             )
             image_chw = _resize_image_crop(crop_hwc=image_hwc, resize_ctx=resize_ctx)
             image_tensor = torch.from_numpy(image_chw).float().unsqueeze(0).to(device)
+            io_sec = time.time() - io_t0
 
             neighbors = tile_neighbors[tile_index] if tile_index < len(tile_neighbors) else {"left": False, "top": False}
+            state_t0 = time.time()
             state_regions = _state_region_bboxes(
                 crop_bbox=crop_bbox,
                 border_margin_px=border_margin_px,
@@ -593,15 +605,19 @@ def run_tiled_sample_prediction(
                 state_input_ids=state_input_ids,
                 decode_cfg=decode_cfg,
             )
+            state_sec = time.time() - state_t0
 
             if log_progress:
                 prefix = f"[Infer] {progress_label} " if progress_label else "[Infer] "
                 print(
                     f"{prefix}task={task_name} tile={tile_index + 1}/{len(tile_windows)} "
-                    f"state_anchors={len(state_items)} max_new_tokens={max_new_tokens}",
+                    f"state_anchors={len(state_items)} prompt_tokens={prompt_input_ids.shape[1]} "
+                    f"state_tokens={state_input_ids.shape[1]} max_new_tokens={max_new_tokens} "
+                    f"io_sec={io_sec:.2f} state_sec={state_sec:.2f}",
                     flush=True,
                 )
 
+            gen_t0 = time.time()
             with torch.no_grad():
                 pred_qwen_ids = model.generate(
                     image=image_tensor,
@@ -619,6 +635,8 @@ def run_tiled_sample_prediction(
                     use_kv_cache=_as_bool(decode_cfg.get("use_kv_cache", True), default=True),
                     return_token_meta=False,
                 )
+            gen_sec = time.time() - gen_t0
+            parse_t0 = time.time()
             pred_qwen_ids = pred_qwen_ids[0].detach().cpu().tolist()
             pred_text = text_tokenizer.decode_text(pred_qwen_ids)
             pred_geojson = coerce_feature_collection(
@@ -634,7 +652,9 @@ def run_tiled_sample_prediction(
                 if pred_geojson is not None
                 else []
             )
+            parse_sec = time.time() - parse_t0
 
+            keep_t0 = time.time()
             kept_current = _retain_predictions_for_keep_bbox(
                 feature_records=pred_features_abs,
                 keep_bbox=keep_bbox,
@@ -642,6 +662,7 @@ def run_tiled_sample_prediction(
             for feature in kept_current:
                 _merge_feature_into_memory(task_state_memory, feature=feature, task_schema=task_schema, tolerance_px=3.0)
                 _merge_feature_into_memory(kept_predictions, feature=feature, task_schema=task_schema, tolerance_px=3.0)
+            keep_sec = time.time() - keep_t0
 
             stripped_ids = text_tokenizer.strip_padding(pred_qwen_ids)
             if text_tokenizer.eos_token_id in stripped_ids:
@@ -690,6 +711,15 @@ def run_tiled_sample_prediction(
                 task_parse_stats["dropped_by_keep_bbox_tiles"] += 1
             if pred_features_abs:
                 task_parse_stats["non_empty_feature_tiles"] += 1
+            if log_progress:
+                prefix = f"[Infer] {progress_label} " if progress_label else "[Infer] "
+                print(
+                    f"{prefix}task={task_name} tile={tile_index + 1}/{len(tile_windows)} "
+                    f"generate_sec={gen_sec:.2f} parse_sec={parse_sec:.2f} keep_sec={keep_sec:.2f} "
+                    f"pred_features={len(pred_features_abs)} kept_features={len(kept_current)} "
+                    f"decoded_ok={decoded_ok} tile_total_sec={time.time() - tile_t0:.2f}",
+                    flush=True,
+                )
 
         task_predictions[task_name] = deduplicate_feature_records(
             task_schema=task_schema,
@@ -700,8 +730,17 @@ def run_tiled_sample_prediction(
         )
         parse_stats[task_name] = task_parse_stats
         raw_outputs[task_name] = raw_task_outputs
+        if log_progress:
+            prefix = f"[Infer] {progress_label} " if progress_label else "[Infer] "
+            print(
+                f"{prefix}task={task_name} finished task_sec={time.time() - task_t0:.2f} "
+                f"tile_count={task_parse_stats['tile_count']} decoded_ok={task_parse_stats['decoded_ok_count']} "
+                f"pred_sum={task_parse_stats['pred_feature_count_sum']} kept_sum={task_parse_stats['kept_feature_count_sum']} "
+                f"dropped_by_keep_bbox={task_parse_stats['dropped_by_keep_bbox_tiles']}",
+                flush=True,
+            )
 
-    return {
+    result = {
         "raster_meta": raster_meta,
         "review_mask": review_mask,
         "tile_windows": tile_windows,
@@ -720,3 +759,10 @@ def run_tiled_sample_prediction(
         "parse_stats": parse_stats,
         "raw_outputs": raw_outputs,
     }
+    if log_progress:
+        prefix = f"[Infer] {progress_label} " if progress_label else "[Infer] "
+        print(
+            f"{prefix}sample_finished total_sec={time.time() - total_t0:.2f}",
+            flush=True,
+        )
+    return result
