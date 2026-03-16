@@ -111,7 +111,9 @@ class QwenSatelliteMapGenerator(nn.Module):
             flush=True,
         )
         self.llm.resize_token_embeddings(int(vocab_size))
+        #self.hidden_size是qwen的hiddensize
         self.hidden_size = int(self.llm.config.hidden_size)
+        #sat_proj的输入维度是dino的hidden_size，输出维度是qwen的hiddensize
         self.sat_proj = nn.Linear(int(self.sat_encoder.hidden_size), self.hidden_size)
         self.use_pv = bool(use_pv)
         if self.use_pv:
@@ -239,10 +241,12 @@ class QwenSatelliteMapGenerator(nn.Module):
     ):
         sat_requires_grad = any(p.requires_grad for p in self.sat_encoder.parameters())
         with torch.set_grad_enabled(bool(sat_requires_grad)):
+            #这里是送入dino模型
             sat_tokens = self.sat_encoder(image)
         sat_proj_dtype = self.sat_proj.weight.dtype
         if sat_tokens.dtype != sat_proj_dtype:
             sat_tokens = sat_tokens.to(dtype=sat_proj_dtype)
+            #这里是送入proj层转换
         sat_tokens = self.sat_proj(sat_tokens).to(dtype=self.llm_embed_dtype)
         sat_mask = torch.ones(
             (image.shape[0], sat_tokens.shape[1]),
@@ -298,19 +302,23 @@ class QwenSatelliteMapGenerator(nn.Module):
             state_input_ids=state_input_ids,
             state_attention_mask=state_attention_mask,
         )
+
+        #这里的map_input_ids从__call__中来，在__call__中调用的tokenizer，而它就是真值
         map_embeds = self.llm.get_input_embeddings()(map_input_ids).to(dtype=self.llm_embed_dtype)
         inputs_embeds = torch.cat([prefix_embeds, map_embeds], dim=1)
         attention_mask = torch.cat([prefix_mask, map_attention_mask.long()], dim=1)
-
+        #这里把前缀的embeds用掩码-100来表示不参与loss值计算，只做提示
         prefix_labels = torch.full(
             (image.shape[0], prefix_embeds.shape[1]),
             -100,
             device=image.device,
             dtype=torch.long,
         )
+        #不同patch的geojson真值不同，要用长短不一的padding补充，这里对padding位置用掩码-100表示不参与loss计算
         map_labels = map_input_ids.masked_fill(map_attention_mask.eq(0), -100)
         labels = torch.cat([prefix_labels, map_labels], dim=1)
 
+        #直到这里才把数据输入qwen计算
         outputs = self.llm(
             inputs_embeds=inputs_embeds,
             attention_mask=attention_mask,
@@ -318,6 +326,7 @@ class QwenSatelliteMapGenerator(nn.Module):
             use_cache=False,
             return_dict=True,
         )
+        #把labels传进去，Hugging Face的 causal LM 模型就会自动计算loss
         loss = outputs.loss
         logits = outputs.logits if bool(return_logits) else None
         del outputs

@@ -158,6 +158,7 @@ def build_geo_dataset(
 
 def build_geo_components(cfg: Dict):
     task_schemas = load_geo_task_schemas(cfg)
+    #tokenizer构建
     text_tokenizer = GeoCoordTokenizer(
         qwen_model_path=str(cfg["model"]["qwen_model_path"]),
         local_files_only=bool(cfg["model"].get("local_files_only", True)),

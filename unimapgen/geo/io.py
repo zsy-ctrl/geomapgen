@@ -12,9 +12,13 @@ from rasterio.windows import Window
 
 from .errors import wrap_geo_error
 from .schema import TaskSchema
+from .coord_sequence import points_abs_to_uv, points_uv_to_abs, rings_abs_to_uv, rings_uv_to_abs
+from .geometry import ResizeContext
 
 
 DEFAULT_GEOJSON_CRS = "urn:ogc:def:crs:OGC:1.3:CRS84"
+NON_TRAINING_PROPERTY_KEYS = {"Id", "RoadId"}
+DEFAULT_TASK_ID_ORDER = ("lane", "intersection")
 
 
 @dataclass
@@ -409,6 +413,110 @@ def pixel_features_to_geojson(
         )
 
 
+def pixel_features_to_uv_geojson(
+    task_schema: TaskSchema,
+    feature_records: Sequence[Dict],
+    resize_ctx: ResizeContext,
+    include_z: bool = True,
+) -> Dict:
+    try:
+        out_features = []
+        for feature in feature_records:
+            props = dict(feature.get("properties", {}))
+            points_abs = np.asarray(feature.get("points", []), dtype=np.float32)
+            points_uv = points_abs_to_uv(points_abs, resize_ctx=resize_ctx)
+            if task_schema.geometry_type == "polygon":
+                raw_rings = feature.get("rings")
+                rings_uv = []
+                if raw_rings:
+                    rings_uv = rings_abs_to_uv(raw_rings, resize_ctx=resize_ctx)
+                elif points_uv.shape[0] >= task_schema.min_points_per_feature:
+                    rings_uv = [points_uv]
+                if not rings_uv:
+                    continue
+                polygon_coords = []
+                for ring_uv in rings_uv:
+                    coords = []
+                    for u, v in ring_uv:
+                        coords.append([float(u), float(v), 0.0] if include_z else [float(u), float(v)])
+                    if coords and coords[0] != coords[-1]:
+                        coords.append(list(coords[0]))
+                    if coords:
+                        polygon_coords.append(coords)
+                geometry = {"type": "Polygon", "coordinates": polygon_coords}
+            else:
+                if points_uv.shape[0] < task_schema.min_points_per_feature:
+                    continue
+                coords = []
+                for u, v in points_uv:
+                    coords.append([float(u), float(v), 0.0] if include_z else [float(u), float(v)])
+                geometry = {"type": "LineString", "coordinates": coords}
+            out_features.append({"type": "Feature", "properties": props, "geometry": geometry})
+        return {
+            "type": "FeatureCollection",
+            "name": task_schema.collection_name,
+            "features": out_features,
+        }
+    except Exception as exc:
+        wrap_geo_error(
+            code="GEO-1214",
+            message=f"failed to convert pixel features to UV GeoJSON for task={task_schema.name}",
+            exc=exc,
+        )
+
+
+def uv_geojson_to_pixel_features(
+    geojson_dict: Dict,
+    task_schema: TaskSchema,
+    resize_ctx: ResizeContext,
+) -> List[Dict]:
+    try:
+        features = []
+        for feature in geojson_dict.get("features", []):
+            if not isinstance(feature, dict):
+                continue
+            geometry = feature.get("geometry", {})
+            geometry_type = str(geometry.get("type", "")).strip().lower()
+            if task_schema.geometry_type == "linestring" and geometry_type != "linestring":
+                continue
+            if task_schema.geometry_type == "polygon" and geometry_type != "polygon":
+                continue
+            coords = geometry.get("coordinates", [])
+            if task_schema.geometry_type == "polygon":
+                rings_uv = _normalize_polygon_coordinate_rings(coords)
+                rings_abs = []
+                for ring in rings_uv:
+                    ring_uv_np = np.asarray([[float(pt[0]), float(pt[1])] for pt in ring if len(pt) >= 2], dtype=np.float32)
+                    if ring_uv_np.shape[0] >= 2 and np.allclose(ring_uv_np[0], ring_uv_np[-1]):
+                        ring_uv_np = ring_uv_np[:-1]
+                    if ring_uv_np.ndim == 2 and ring_uv_np.shape[0] >= 3:
+                        rings_abs.append(points_uv_to_abs(ring_uv_np, resize_ctx=resize_ctx))
+                if not rings_abs:
+                    continue
+                record = {
+                    "properties": dict(feature.get("properties", {})),
+                    "points": rings_abs[0].astype(np.float32),
+                    "rings": [ring.astype(np.float32) for ring in rings_abs],
+                }
+            else:
+                points_uv = np.asarray([[float(pt[0]), float(pt[1])] for pt in coords if len(pt) >= 2], dtype=np.float32)
+                points_abs = points_uv_to_abs(points_uv, resize_ctx=resize_ctx)
+                if points_abs.shape[0] < task_schema.min_points_per_feature:
+                    continue
+                record = {
+                    "properties": dict(feature.get("properties", {})),
+                    "points": points_abs.astype(np.float32),
+                }
+            features.append(record)
+        return features
+    except Exception as exc:
+        wrap_geo_error(
+            code="GEO-1215",
+            message=f"failed to convert UV GeoJSON to pixel features for task={task_schema.name}",
+            exc=exc,
+        )
+
+
 def geojson_dumps(obj: Dict) -> str:
     try:
         return json.dumps(obj, ensure_ascii=False, indent=2)
@@ -429,6 +537,91 @@ def geojson_dumps_compact(obj: Dict) -> str:
             message="failed to serialize compact GeoJSON text",
             exc=exc,
         )
+
+
+def strip_non_training_fields_from_properties(properties: Dict) -> Dict:
+    if not isinstance(properties, dict):
+        return {}
+    return {
+        str(key): value
+        for key, value in properties.items()
+        if str(key) not in NON_TRAINING_PROPERTY_KEYS
+    }
+
+
+def strip_non_training_fields_from_feature_collection(obj: Dict, task_schema: Optional[TaskSchema] = None) -> Dict:
+    collection_name = str(getattr(task_schema, "collection_name", "") or obj.get("name") or "")
+    out_features = []
+    for feature in obj.get("features", []) if isinstance(obj, dict) else []:
+        if not isinstance(feature, dict):
+            continue
+        out_features.append(
+            {
+                "type": "Feature",
+                "properties": strip_non_training_fields_from_properties(feature.get("properties", {})),
+                "geometry": feature.get("geometry", {}),
+            }
+        )
+    return {
+        "type": "FeatureCollection",
+        "name": collection_name,
+        "features": out_features,
+    }
+
+
+def assign_incremental_feature_ids(task_to_geojson: Dict[str, Dict], task_order: Sequence[str] = DEFAULT_TASK_ID_ORDER) -> Dict[str, Dict]:
+    ordered_task_names = []
+    seen = set()
+    for name in list(task_order) + sorted(task_to_geojson.keys()):
+        key = str(name)
+        if key in task_to_geojson and key not in seen:
+            ordered_task_names.append(key)
+            seen.add(key)
+
+    next_global_id = 1
+    next_lane_road_id = 1
+    out: Dict[str, Dict] = {}
+    for task_name in ordered_task_names:
+        geojson_dict = task_to_geojson[task_name]
+        collection = coerce_feature_collection(
+            task_schema=TaskSchema(
+                name=str(task_name),
+                collection_name=str(geojson_dict.get("name") or task_name),
+                geometry_type="linestring" if str(task_name).lower() == "lane" else "polygon",
+                prompt_template="",
+                max_features=0,
+                min_points_per_feature=2 if str(task_name).lower() == "lane" else 3,
+            ),
+            obj=geojson_dict,
+        ) or dict(geojson_dict)
+        features = []
+        is_lane = str(task_name).strip().lower() == "lane"
+        for feature in collection.get("features", []):
+            if not isinstance(feature, dict):
+                continue
+            props = strip_non_training_fields_from_properties(feature.get("properties", {}))
+            props["Id"] = str(next_global_id)
+            next_global_id += 1
+            if is_lane:
+                props["RoadId"] = str(next_lane_road_id)
+                next_lane_road_id += 1
+            features.append(
+                {
+                    "type": "Feature",
+                    "properties": props,
+                    "geometry": feature.get("geometry", {}),
+                }
+            )
+        out[task_name] = {
+            "type": "FeatureCollection",
+            "name": str(collection.get("name") or geojson_dict.get("name") or task_name),
+            "crs": {
+                "type": "name",
+                "properties": {"name": DEFAULT_GEOJSON_CRS},
+            },
+            "features": features,
+        }
+    return out
 
 
 def extract_first_json_object(text: str) -> Optional[Dict]:

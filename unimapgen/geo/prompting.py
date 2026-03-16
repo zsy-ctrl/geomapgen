@@ -4,24 +4,24 @@ from typing import Optional, Sequence
 
 import numpy as np
 
-from .io import RasterMeta, pixel_to_world
+from .io import RasterMeta
 from .schema import TaskSchema
 
 
 _LANE_EXAMPLE = (
-    'Example Lane.geojson: '
-    '{"type":"FeatureCollection","name":"Lane","crs":{"type":"name","properties":{"name":"urn:ogc:def:crs:OGC:1.3:CRS84"}},'
-    '"features":[{"type":"Feature","properties":{"Id":"L1","LaneType":14},"geometry":{"type":"LineString","coordinates":[[116.1001,39.9001,0],[116.1006,39.9001,0]]}},'
-    '{"type":"Feature","properties":{"Id":"L2","LaneType":9},"geometry":{"type":"LineString","coordinates":[[116.1002,39.9003,0],[116.1007,39.9006,0]]}},'
-    '{"type":"Feature","properties":{"Id":"L3","LaneType":7},"geometry":{"type":"LineString","coordinates":[[116.1003,39.8998,0],[116.1009,39.8999,0],[116.1012,39.9002,0]]}}]}.'
+    'Example Lane.uv.geojson: '
+    '{"type":"FeatureCollection","name":"Lane",'
+    '"features":[{"type":"Feature","properties":{"LaneType":14},"geometry":{"type":"LineString","coordinates":[[20,40,0],[180,40,0]]}},'
+    '{"type":"Feature","properties":{"LaneType":9},"geometry":{"type":"LineString","coordinates":[[36,84,0],[172,156,0]]}},'
+    '{"type":"Feature","properties":{"LaneType":7},"geometry":{"type":"LineString","coordinates":[[60,24,0],[170,32,0],[220,92,0]]}}]}.'
 )
 
 _INTERSECTION_EXAMPLE = (
-    'Example Intersection.geojson: '
-    '{"type":"FeatureCollection","name":"Intersection","crs":{"type":"name","properties":{"name":"urn:ogc:def:crs:OGC:1.3:CRS84"}},'
-    '"features":[{"type":"Feature","properties":{"Id":"I1","IntersectionType":1},"geometry":{"type":"Polygon","coordinates":[[[116.2001,39.8001,0],[116.2005,39.8001,0],[116.2005,39.8005,0],[116.2001,39.8005,0],[116.2001,39.8001,0]]]}},'
-    '{"type":"Feature","properties":{"Id":"I2","IntersectionType":1},"geometry":{"type":"Polygon","coordinates":[[[116.2010,39.8010,0],[116.2014,39.8010,0],[116.2014,39.8014,0],[116.2010,39.8014,0],[116.2010,39.8010,0]]]}},'
-    '{"type":"Feature","properties":{"Id":"I3","IntersectionType":2},"geometry":{"type":"Polygon","coordinates":[[[116.2020,39.8020,0],[116.2024,39.8020,0],[116.2025,39.8024,0],[116.2021,39.8025,0],[116.2020,39.8020,0]]]}}]}.'
+    'Example Intersection.uv.geojson: '
+    '{"type":"FeatureCollection","name":"Intersection",'
+    '"features":[{"type":"Feature","properties":{"IntersectionType":1},"geometry":{"type":"Polygon","coordinates":[[[24,24,0],[88,24,0],[88,88,0],[24,88,0],[24,24,0]]]}},'
+    '{"type":"Feature","properties":{"IntersectionType":1},"geometry":{"type":"Polygon","coordinates":[[[144,80,0],[208,80,0],[208,144,0],[144,144,0],[144,80,0]]]}},'
+    '{"type":"Feature","properties":{"IntersectionType":2},"geometry":{"type":"Polygon","coordinates":[[[168,168,0],[224,168,0],[232,220,0],[176,232,0],[168,168,0]]]}}]}.'
 )
 
 
@@ -41,30 +41,11 @@ def build_geotiff_context_text(
         x0, y0, x1, y1 = 0, 0, int(meta.width), int(meta.height)
     else:
         x0, y0, x1, y1 = [int(v) for v in crop_bbox]
-    corners_px = np.asarray(
-        [
-            [float(x0), float(y0)],
-            [float(x1), float(y0)],
-            [float(x0), float(y1)],
-            [float(x1), float(y1)],
-        ],
-        dtype=np.float32,
-    )
-    corners_world = pixel_to_world(points_px=corners_px, raster_meta=meta)
-    xmin = float(np.min(corners_world[:, 0]))
-    xmax = float(np.max(corners_world[:, 0]))
-    ymin = float(np.min(corners_world[:, 1]))
-    ymax = float(np.max(corners_world[:, 1]))
-    crs_text = str(meta.crs or "unknown").replace(" ", "_")
-    origin_x = float(meta.transform[2])
-    origin_y = float(meta.transform[5])
     return (
-        "GeoMeta "
-        f"crs={crs_text} "
-        f"origin={_fmt_float(origin_x, precision)},{_fmt_float(origin_y, precision)} "
-        f"pixel_size={_fmt_float(meta.pixel_size_x, precision)},{_fmt_float(meta.pixel_size_y, precision)} "
+        "PatchMeta "
         f"patch_px={x0},{y0},{x1},{y1} "
-        f"patch_world={_fmt_float(xmin, precision)},{_fmt_float(ymin, precision)},{_fmt_float(xmax, precision)},{_fmt_float(ymax, precision)}."
+        f"image_size_hint={int(max(1, x1 - x0))}x{int(max(1, y1 - y0))} "
+        "uv_origin=0,0."
     )
 
 
@@ -97,7 +78,8 @@ def build_task_prompt_text(
     parts.append(str(base_prompt).strip())
     parts.append(
         "Output only the final GeoJSON FeatureCollection text. "
-        "Do not output StateAnchorMeta, PatchTargetMeta, CutFeature, commentary, or markdown."
+        "Do not output commentary or markdown. "
+        "Do not generate CRS, Id, or RoadId fields; they are assigned after decoding."
     )
     suffix = str(with_state_suffix if has_state else without_state_suffix).strip()
     if suffix:

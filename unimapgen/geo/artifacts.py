@@ -19,9 +19,11 @@ from .io import (
     geojson_dumps,
     geojson_to_pixel_features,
     pixel_features_to_geojson,
+    pixel_features_to_uv_geojson,
     read_raster_meta,
     read_rgb_geotiff,
     save_text,
+    uv_geojson_to_pixel_features,
 )
 
 
@@ -71,6 +73,15 @@ def save_geojson_snapshot(path: str, task_schema, feature_records: Sequence[Dict
         task_schema=task_schema,
         feature_records=feature_records,
         raster_meta=meta,
+    )
+    save_text(path, geojson_dumps(geojson_dict))
+
+
+def save_uv_geojson_snapshot(path: str, task_schema, feature_records: Sequence[Dict], resize_ctx) -> None:
+    geojson_dict = pixel_features_to_uv_geojson(
+        task_schema=task_schema,
+        feature_records=feature_records,
+        resize_ctx=resize_ctx,
     )
     save_text(path, geojson_dumps(geojson_dict))
 
@@ -231,6 +242,8 @@ def export_batch_geojson_snapshots(
                 )
                 save_json(os.path.join(sample_out_dir, "state_items.json"), batch["state_items_list"][sample_index])
                 save_json(os.path.join(sample_out_dir, "target_items.json"), batch["target_items_list"][sample_index])
+                save_text(os.path.join(sample_out_dir, f"{task_schema.collection_name}.gt.uv.geojson"), geojson_dumps(batch.get("target_uv_geojsons", [{}])[sample_index]))
+                save_text(os.path.join(sample_out_dir, f"{task_schema.collection_name}cut.uv.geojson"), geojson_dumps(batch.get("state_uv_geojsons", [{}])[sample_index]))
 
                 target_feature_records_list = batch.get("target_feature_records_list", [])
                 gt_features_abs = (
@@ -286,16 +299,20 @@ def export_batch_geojson_snapshots(
                     obj=extract_first_json_object(pred_text),
                 )
                 pred_features_abs = (
-                    geojson_to_pixel_features(
+                    uv_geojson_to_pixel_features(
                         geojson_dict=pred_geojson,
                         task_schema=task_schema,
-                        raster_meta=raster_meta,
+                        resize_ctx=resize_ctx,
                     )
                     if pred_geojson is not None
                     else []
                 )
                 save_text(os.path.join(sample_out_dir, f"{task_schema.collection_name}.pred.raw.txt"), pred_text)
                 if pred_geojson is not None:
+                    save_text(
+                        os.path.join(sample_out_dir, f"{task_schema.collection_name}.pred.uv.geojson"),
+                        geojson_dumps(pred_geojson),
+                    )
                     save_geojson_snapshot(
                         path=os.path.join(sample_out_dir, f"{task_schema.collection_name}.pred.geojson"),
                         task_schema=task_schema,
@@ -379,16 +396,28 @@ def export_prediction_tile_geojsons(
         for tile_record in tile_records:
             tile_index = int(tile_record.get("tile_index", 0))
             pred_geojson = tile_record.get("pred_geojson")
+            pred_uv_geojson = tile_record.get("pred_uv_geojson")
             kept_geojson = tile_record.get("kept_geojson")
+            kept_uv_geojson = tile_record.get("kept_uv_geojson")
             pred_text = str(tile_record.get("pred_text", ""))
             save_text(
                 os.path.join(task_out_dir, f"tile_{tile_index:04d}.pred.raw.txt"),
                 pred_text,
             )
+            if isinstance(pred_uv_geojson, dict):
+                save_text(
+                    os.path.join(task_out_dir, f"tile_{tile_index:04d}.pred.uv.geojson"),
+                    geojson_dumps(pred_uv_geojson),
+                )
             if isinstance(pred_geojson, dict):
                 save_text(
                     os.path.join(task_out_dir, f"tile_{tile_index:04d}.pred.geojson"),
                     geojson_dumps(pred_geojson),
+                )
+            if isinstance(kept_uv_geojson, dict):
+                save_text(
+                    os.path.join(task_out_dir, f"tile_{tile_index:04d}.kept.uv.geojson"),
+                    geojson_dumps(kept_uv_geojson),
                 )
             if isinstance(kept_geojson, dict):
                 save_text(
@@ -428,11 +457,33 @@ def export_eval_sample_geojsons(
             feature_records=pred_features,
             raster_meta=raster_meta,
         )
+        save_uv_geojson_snapshot(
+            path=os.path.join(output_dir, f"{task_schema.collection_name}.pred.uv.geojson"),
+            task_schema=task_schema,
+            feature_records=pred_features,
+            resize_ctx=build_resize_context(
+                width=int(raster_meta.width),
+                height=int(raster_meta.height),
+                target_size=int(cfg["data"]["image_size"]),
+                crop_bbox=None,
+            ),
+        )
         save_geojson_snapshot(
             path=os.path.join(output_dir, f"{task_schema.collection_name}.gt.geojson"),
             task_schema=task_schema,
             feature_records=gt_features,
             raster_meta=raster_meta,
+        )
+        save_uv_geojson_snapshot(
+            path=os.path.join(output_dir, f"{task_schema.collection_name}.gt.uv.geojson"),
+            task_schema=task_schema,
+            feature_records=gt_features,
+            resize_ctx=build_resize_context(
+                width=int(raster_meta.width),
+                height=int(raster_meta.height),
+                target_size=int(cfg["data"]["image_size"]),
+                crop_bbox=None,
+            ),
         )
 
 

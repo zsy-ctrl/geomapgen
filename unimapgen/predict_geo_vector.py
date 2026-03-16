@@ -5,7 +5,8 @@ import time
 
 from unimapgen.geo.artifacts import export_prediction_tile_geojsons
 from unimapgen.geo.errors import raise_geo_error, run_with_geo_error_boundary
-from unimapgen.geo.io import geojson_dumps, pixel_features_to_geojson, save_text
+from unimapgen.geo.io import geojson_dumps, pixel_features_to_uv_geojson, save_text
+from unimapgen.geo.geometry import build_resize_context
 from unimapgen.geo.inference import run_tiled_sample_prediction
 from unimapgen.geo.pipeline import (
     build_geo_components,
@@ -152,6 +153,7 @@ def main() -> None:
         raster_meta = pred_result["raster_meta"]
         sample_result["parse_stats"] = pred_result.get("parse_stats", {})
         failed_tasks = []
+        final_geojsons = pred_result.get("task_prediction_geojsons", {})
         for task_name, task_schema in task_schemas.items():
             pred_original_features = pred_result["task_predictions"].get(task_name, [])
             raw_tile_outputs = pred_result.get("raw_outputs", {}).get(task_name, [])
@@ -176,13 +178,25 @@ def main() -> None:
                     "raw_text": raw_text_path,
                 }
                 continue
-            geojson_dict = pixel_features_to_geojson(
-                task_schema=task_schema,
-                feature_records=pred_original_features,
-                raster_meta=raster_meta,
-            )
+            geojson_dict = final_geojsons.get(task_name)
+            if geojson_dict is None:
+                continue
             output_path = os.path.join(sample_out_dir, f"{task_schema.collection_name}.geojson")
             save_text(output_path, geojson_dumps(geojson_dict))
+            uv_geojson = pixel_features_to_uv_geojson(
+                task_schema=task_schema,
+                feature_records=pred_original_features,
+                resize_ctx=build_resize_context(
+                    width=int(raster_meta.width),
+                    height=int(raster_meta.height),
+                    target_size=int(cfg["data"]["image_size"]),
+                    crop_bbox=None,
+                ),
+            )
+            save_text(
+                os.path.join(sample_out_dir, f"{task_schema.collection_name}.uv.geojson"),
+                geojson_dumps(uv_geojson),
+            )
             sample_result["outputs"][task_name] = output_path
             sample_result.setdefault("debug_outputs", {})[task_name] = {
                 "raw_tiles": raw_output_path,

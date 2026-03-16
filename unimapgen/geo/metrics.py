@@ -7,6 +7,7 @@ from shapely.geometry import LineString, Polygon
 
 from .io import RasterMeta, pixel_to_world
 from .schema import TaskSchema
+from .io import NON_TRAINING_PROPERTY_KEYS
 
 
 def filter_features_by_review_mask(
@@ -236,9 +237,11 @@ def _property_accuracy(matches: Sequence[Dict], pred_geoms: Sequence[Dict], gt_g
 
 
 def _properties_equal(pred_props: Dict, gt_props: Dict) -> bool:
-    if pred_props.keys() != gt_props.keys():
+    pred_keys = {key for key in pred_props.keys() if str(key) not in NON_TRAINING_PROPERTY_KEYS}
+    gt_keys = {key for key in gt_props.keys() if str(key) not in NON_TRAINING_PROPERTY_KEYS}
+    if pred_keys != gt_keys:
         return False
-    for key in pred_props.keys():
+    for key in pred_keys:
         pred_value = pred_props[key]
         gt_value = gt_props[key]
         if isinstance(pred_value, float) or isinstance(gt_value, float):

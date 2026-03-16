@@ -37,7 +37,12 @@ from .geometry import (
 )
 from .io import RasterMeta, geojson_to_pixel_features, load_geojson, read_binary_mask, read_raster_meta, read_rgb_geotiff
 from .prompting import build_state_text, build_target_text, build_task_prompt_text
-from .io import geojson_dumps_compact, pixel_features_to_geojson
+from .io import (
+    geojson_dumps_compact,
+    pixel_features_to_geojson,
+    pixel_features_to_uv_geojson,
+    strip_non_training_fields_from_feature_collection,
+)
 from .schema import TaskSchema
 
 
@@ -255,17 +260,29 @@ class GeoVectorDataset(Dataset):
             feature_records=self._feature_records_from_uv(target_features_uv, resize_ctx=resize_ctx),
             raster_meta=raster_meta,
         )
+        state_geojson_uv = pixel_features_to_uv_geojson(
+            task_schema=item["task_schema"],
+            feature_records=self._feature_records_from_uv(state_features_uv, resize_ctx=resize_ctx),
+            resize_ctx=resize_ctx,
+        )
+        target_geojson_uv = pixel_features_to_uv_geojson(
+            task_schema=item["task_schema"],
+            feature_records=self._feature_records_from_uv(target_features_uv, resize_ctx=resize_ctx),
+            resize_ctx=resize_ctx,
+        )
+        state_geojson_train = strip_non_training_fields_from_feature_collection(state_geojson_uv, task_schema=item["task_schema"])
+        target_geojson_train = strip_non_training_fields_from_feature_collection(target_geojson_uv, task_schema=item["task_schema"])
         state_text = build_state_text(
             task_schema=item["task_schema"],
             state_items=state_items,
-            geojson_text=geojson_dumps_compact(state_geojson),
+            geojson_text=geojson_dumps_compact(state_geojson_train),
         )
         target_meta_text = build_target_text(
             task_schema=item["task_schema"],
             target_items=target_items,
-            geojson_text=geojson_dumps_compact(target_geojson),
+            geojson_text=geojson_dumps_compact(target_geojson_train),
         )
-        target_text = geojson_dumps_compact(target_geojson)
+        target_text = geojson_dumps_compact(target_geojson_train)
 
         return {
             "image": torch.from_numpy(image_chw).float(),
@@ -280,6 +297,10 @@ class GeoVectorDataset(Dataset):
             "target_items": target_items,
             "state_feature_records": self._clone_feature_records(self._feature_records_from_uv(state_features_uv, resize_ctx=resize_ctx)),
             "target_feature_records": self._clone_feature_records(self._feature_records_from_uv(target_features_uv, resize_ctx=resize_ctx)),
+            "state_uv_geojson": state_geojson_uv,
+            "target_uv_geojson": target_geojson_uv,
+            "state_world_geojson": state_geojson,
+            "target_world_geojson": target_geojson,
             "raster_meta": raster_meta.to_dict(),
             "resize_ctx": resize_ctx.to_dict(),
             "review_mask_path": item["review_mask_path"],
@@ -1130,6 +1151,7 @@ class GeoVectorCollator:
     def __call__(self, batch: List[Dict]) -> Dict[str, torch.Tensor]:
         images = torch.stack([b["image"] for b in batch], dim=0)
         prompt_ids = [
+            #这里的map_tokenizer在build_geo_components里构建，在GeoVectorCollator中传入map_tokenizer=text_tokenizer
             self.map_tokenizer.encode_prompt(b["prompt_text"], max_length=self.prompt_max_tokens)
             for b in batch
         ]
@@ -1190,6 +1212,10 @@ class GeoVectorCollator:
             "target_items_list": [b["target_items"] for b in batch],
             "state_feature_records_list": [b.get("state_feature_records", []) for b in batch],
             "target_feature_records_list": [b.get("target_feature_records", []) for b in batch],
+            "state_uv_geojsons": [b.get("state_uv_geojson", {}) for b in batch],
+            "target_uv_geojsons": [b.get("target_uv_geojson", {}) for b in batch],
+            "state_world_geojsons": [b.get("state_world_geojson", {}) for b in batch],
+            "target_world_geojsons": [b.get("target_world_geojson", {}) for b in batch],
             "raster_metas": [b["raster_meta"] for b in batch],
             "resize_ctxs": [b["resize_ctx"] for b in batch],
             "review_mask_paths": [b["review_mask_path"] for b in batch],

@@ -18,6 +18,8 @@ from unimapgen.geo.artifacts import (
     save_json,
 )
 from unimapgen.geo.errors import run_with_geo_error_boundary, wrap_geo_error
+from unimapgen.geo.io import assign_incremental_feature_ids, geojson_dumps, pixel_features_to_geojson, pixel_features_to_uv_geojson
+from unimapgen.geo.geometry import build_resize_context
 from unimapgen.geo.metrics import deduplicate_feature_records
 from unimapgen.geo.pipeline import (
     atomic_torch_save,
@@ -763,6 +765,7 @@ def run_training(config_path: str, mode_override: str = "") -> None:
                 "epoch": int(epoch),
                 "tasks": {},
             }
+            stitched_geojson_by_task = {}
             for task_name, task_schema in task_schemas.items():
                 pred_records = epoch_pred_features.get(task_name, [])
                 stitched_records = deduplicate_feature_records(
@@ -772,14 +775,7 @@ def run_training(config_path: str, mode_override: str = "") -> None:
                     line_distance_threshold_m=float(cfg.get("postprocess", {}).get("line_dedup_distance_m", 1.0)),
                     polygon_iou_threshold=float(cfg.get("postprocess", {}).get("polygon_dedup_iou", 0.5)),
                 )
-                save_geojson_snapshot(
-                    path=os.path.join(stitched_out_dir, f"{task_schema.collection_name}.stitched.pred.geojson"),
-                    task_schema=task_schema,
-                    feature_records=stitched_records,
-                    raster_meta=epoch_raster_meta,
-                )
-                save_geojson_snapshot(
-                    path=os.path.join(stitched_out_dir, f"{task_schema.collection_name}.geojson"),
+                stitched_geojson_by_task[task_name] = pixel_features_to_geojson(
                     task_schema=task_schema,
                     feature_records=stitched_records,
                     raster_meta=epoch_raster_meta,
@@ -788,6 +784,30 @@ def run_training(config_path: str, mode_override: str = "") -> None:
                     "patch_pred_feature_count": int(len(pred_records)),
                     "stitched_feature_count": int(len(stitched_records)),
                 }
+            stitched_geojson_by_task = assign_incremental_feature_ids(stitched_geojson_by_task)
+            for task_name, task_schema in task_schemas.items():
+                geojson_dict = stitched_geojson_by_task.get(task_name)
+                if geojson_dict is None:
+                    continue
+                with open(os.path.join(stitched_out_dir, f"{task_schema.collection_name}.stitched.pred.geojson"), "w", encoding="utf-8") as f:
+                    f.write(geojson_dumps(geojson_dict))
+                with open(os.path.join(stitched_out_dir, f"{task_schema.collection_name}.geojson"), "w", encoding="utf-8") as f:
+                    f.write(geojson_dumps(geojson_dict))
+                with open(os.path.join(stitched_out_dir, f"{task_schema.collection_name}.uv.geojson"), "w", encoding="utf-8") as f:
+                    f.write(
+                        geojson_dumps(
+                            pixel_features_to_uv_geojson(
+                                task_schema=task_schema,
+                                feature_records=stitched_records,
+                                resize_ctx=build_resize_context(
+                                    width=int(epoch_raster_meta.width),
+                                    height=int(epoch_raster_meta.height),
+                                    target_size=int(cfg["data"]["image_size"]),
+                                    crop_bbox=None,
+                                ),
+                            )
+                        )
+                    )
             save_json(os.path.join(stitched_out_dir, "summary.json"), stitched_summary)
         if device.type == "cuda":
             torch.cuda.empty_cache()

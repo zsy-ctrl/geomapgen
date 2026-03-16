@@ -46,21 +46,16 @@ serialization:
       max_features: ${UNIMAPGEN_LANE_MAX_FEATURES:-32}
       min_points_per_feature: 2
       prompt_template: >
-        Output patch-local lane text for the current patch.
-        Learn lane field names, values, and multi-feature formatting from supervision. The final GeoJSON object must be a valid Lane FeatureCollection.
-        The features array may contain zero, one, or many lane Features. Do not assume a fixed lane count.
-        Do not explain anything. Do not use markdown.
+        Output valid Lane GeoJSON for this patch only.
+        Keep only stable lane attributes and geometry.
     intersection:
       collection_name: Intersection
       geometry_type: polygon
       max_features: ${UNIMAPGEN_INTERSECTION_MAX_FEATURES:-16}
       min_points_per_feature: 3
       prompt_template: >
-        Output patch-local intersection text for the current patch.
-        Learn intersection field names, values, and multi-feature formatting from supervision. The final GeoJSON object must be a valid Intersection FeatureCollection.
-        The features array may contain zero, one, or many intersection Features. Do not assume a fixed intersection count.
-        Polygon coordinates must be valid GeoJSON rings and each ring must be closed, with identical first and last coordinates.
-        Do not explain anything. Do not use markdown.
+        Output valid Intersection GeoJSON for this patch only.
+        Keep only stable intersection attributes and geometry.
 
 prompt:
   include_geospatial_context: ${UNIMAPGEN_PROMPT_INCLUDE_GEOSPATIAL_CONTEXT:-true}
@@ -71,9 +66,9 @@ prompt:
     No previous cut-point state anchors are available for this patch.
 
 text:
-  prompt_max_tokens: ${UNIMAPGEN_PROMPT_MAX_TOKENS:-192}
-  state_max_tokens: ${UNIMAPGEN_STATE_MAX_TOKENS:-256}
-  target_max_tokens: ${UNIMAPGEN_TARGET_MAX_TOKENS:-1024}
+  prompt_max_tokens: ${UNIMAPGEN_PROMPT_MAX_TOKENS:-96}
+  state_max_tokens: ${UNIMAPGEN_STATE_MAX_TOKENS:-96}
+  target_max_tokens: ${UNIMAPGEN_TARGET_MAX_TOKENS:-256}
 
 state_update:
   enabled: true
@@ -142,11 +137,11 @@ artifact_export:
   save_val_batch_inputs: ${UNIMAPGEN_SAVE_VAL_BATCH_INPUTS:-true}
   save_train_batch_geojson: ${UNIMAPGEN_SAVE_TRAIN_BATCH_GEOJSON:-true}
   save_val_batch_geojson: ${UNIMAPGEN_SAVE_VAL_BATCH_GEOJSON:-true}
-  save_train_batch_predictions: ${UNIMAPGEN_SAVE_TRAIN_BATCH_PREDICTIONS:-true}
+  save_train_batch_predictions: ${UNIMAPGEN_SAVE_TRAIN_BATCH_PREDICTIONS:-false}
   save_val_batch_predictions: ${UNIMAPGEN_SAVE_VAL_BATCH_PREDICTIONS:-true}
   save_eval_sample_geojson: ${UNIMAPGEN_SAVE_EVAL_SAMPLE_GEOJSON:-true}
   save_predict_tile_geojson: ${UNIMAPGEN_SAVE_PREDICT_TILE_GEOJSON:-true}
-  max_batches_per_epoch: ${UNIMAPGEN_ARTIFACT_MAX_BATCHES_PER_EPOCH:-0}
+  max_batches_per_epoch: ${UNIMAPGEN_ARTIFACT_MAX_BATCHES_PER_EPOCH:-1}
   max_samples_per_batch: ${UNIMAPGEN_ARTIFACT_MAX_SAMPLES_PER_BATCH:-1}
   max_patch_images_per_sample: ${UNIMAPGEN_ARTIFACT_MAX_PATCH_IMAGES_PER_SAMPLE:-1}
 

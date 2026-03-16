@@ -190,7 +190,7 @@ dataset_root/
 
 完整说明见：
 
-- [geo_dataset_structure.md](/c:/DevelopProject/VScode/UniMapGenStrongBaseline/docs/geo_dataset_structure.md)
+- [Geo数据集结构说明](/c:/DevelopProject/VScode/geomapgen/docs/Geo数据集结构说明.md)
 
 ## 7. 第一次启动前的最短检查
 
@@ -210,7 +210,7 @@ python -m unimapgen.check_geo_data --config configs/geo_vector_full.yaml
 
 如果这里报错，优先看错误码文档：
 
-- [geo_error_codes.md](/c:/DevelopProject/VScode/UniMapGenStrongBaseline/docs/geo_error_codes.md)
+- 错误码文档已移除，如需排查请直接查看训练/推理日志中的 `GEO-xxxx` 编号。
 
 ## 8. 快速启动训练
 
@@ -484,4 +484,4 @@ python -m unimapgen.predict_geo_vector \
 
 错误码对照见：
 
-- [geo_error_codes.md](/c:/DevelopProject/VScode/UniMapGenStrongBaseline/docs/geo_error_codes.md)
+- 错误码文档已移除，如需排查请直接查看训练/推理日志中的 `GEO-xxxx` 编号。

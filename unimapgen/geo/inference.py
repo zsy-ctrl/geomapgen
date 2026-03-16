@@ -26,14 +26,18 @@ from .pipeline import get_stage_tiling_cfg
 from .prompting import build_state_text, build_task_prompt_text
 from .schema import TaskSchema
 from .io import (
+    NON_TRAINING_PROPERTY_KEYS,
+    assign_incremental_feature_ids,
     coerce_feature_collection,
     extract_first_json_object,
     geojson_dumps_compact,
     geojson_to_pixel_features,
     pixel_features_to_geojson,
+    pixel_features_to_uv_geojson,
     read_binary_mask,
     read_raster_meta,
     read_rgb_geotiff,
+    uv_geojson_to_pixel_features,
 )
 
 
@@ -348,9 +352,11 @@ def _retain_predictions_for_keep_bbox(
 
 
 def _properties_equal(pred_props: Dict, gt_props: Dict) -> bool:
-    if pred_props.keys() != gt_props.keys():
+    pred_keys = {key for key in pred_props.keys() if str(key) not in NON_TRAINING_PROPERTY_KEYS}
+    gt_keys = {key for key in gt_props.keys() if str(key) not in NON_TRAINING_PROPERTY_KEYS}
+    if pred_keys != gt_keys:
         return False
-    for key in pred_props.keys():
+    for key in pred_keys:
         pred_value = pred_props[key]
         gt_value = gt_props[key]
         if isinstance(pred_value, float) or isinstance(gt_value, float):
@@ -563,10 +569,10 @@ def run_tiled_sample_prediction(
                 task_schema=task_schema,
                 state_items=state_items,
                 geojson_text=geojson_dumps_compact(
-                    pixel_features_to_geojson(
+                    pixel_features_to_uv_geojson(
                         task_schema=task_schema,
                         feature_records=state_features_abs,
-                        raster_meta=raster_meta,
+                        resize_ctx=resize_ctx,
                     )
                 ),
             )
@@ -616,10 +622,10 @@ def run_tiled_sample_prediction(
                 obj=extract_first_json_object(pred_text),
             )
             pred_features_abs = (
-                geojson_to_pixel_features(
+                uv_geojson_to_pixel_features(
                     geojson_dict=pred_geojson,
                     task_schema=task_schema,
-                    raster_meta=raster_meta,
+                    resize_ctx=resize_ctx,
                 )
                 if pred_geojson is not None
                 else []
@@ -650,10 +656,16 @@ def run_tiled_sample_prediction(
                     "state_anchor_count": int(len(state_items)),
                     "token_ids": [int(x) for x in pred_qwen_ids],
                     "pred_text": pred_text,
+                    "pred_uv_geojson": pred_geojson,
                     "pred_geojson": pixel_features_to_geojson(
                         task_schema=task_schema,
                         feature_records=pred_features_abs,
                         raster_meta=raster_meta,
+                    ),
+                    "kept_uv_geojson": pixel_features_to_uv_geojson(
+                        task_schema=task_schema,
+                        feature_records=kept_current,
+                        resize_ctx=resize_ctx,
                     ),
                     "kept_geojson": pixel_features_to_geojson(
                         task_schema=task_schema,
@@ -685,6 +697,16 @@ def run_tiled_sample_prediction(
         "tile_windows": tile_windows,
         "tile_audit": tile_audit,
         "task_predictions": task_predictions,
+        "task_prediction_geojsons": assign_incremental_feature_ids(
+            {
+                task_name: pixel_features_to_geojson(
+                    task_schema=task_schemas[task_name],
+                    feature_records=task_predictions.get(task_name, []),
+                    raster_meta=raster_meta,
+                )
+                for task_name in task_schemas.keys()
+            }
+        ),
         "parse_stats": parse_stats,
         "raw_outputs": raw_outputs,
     }
