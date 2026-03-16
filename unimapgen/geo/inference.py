@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -611,6 +612,7 @@ def run_tiled_sample_prediction(
                 prefix = f"[Infer] {progress_label} " if progress_label else "[Infer] "
                 print(
                     f"{prefix}task={task_name} tile={tile_index + 1}/{len(tile_windows)} "
+                    f"crop_bbox={crop_bbox} keep_bbox={keep_bbox} "
                     f"state_anchors={len(state_items)} prompt_tokens={prompt_input_ids.shape[1]} "
                     f"state_tokens={state_input_ids.shape[1]} max_new_tokens={max_new_tokens} "
                     f"io_sec={io_sec:.2f} state_sec={state_sec:.2f}",
@@ -715,6 +717,7 @@ def run_tiled_sample_prediction(
                 prefix = f"[Infer] {progress_label} " if progress_label else "[Infer] "
                 print(
                     f"{prefix}task={task_name} tile={tile_index + 1}/{len(tile_windows)} "
+                    f"crop_bbox={crop_bbox} keep_bbox={keep_bbox} "
                     f"generate_sec={gen_sec:.2f} parse_sec={parse_sec:.2f} keep_sec={keep_sec:.2f} "
                     f"pred_features={len(pred_features_abs)} kept_features={len(kept_current)} "
                     f"decoded_ok={decoded_ok} tile_total_sec={time.time() - tile_t0:.2f}",
