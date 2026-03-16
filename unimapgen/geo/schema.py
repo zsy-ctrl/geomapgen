@@ -19,6 +19,22 @@ class TaskSchema:
     min_points_per_feature: int
 
 
+def _parse_int_field(task_name: str, field_name: str, raw_value: object, default: int) -> int:
+    if raw_value is None:
+        return int(default)
+    try:
+        return int(raw_value)
+    except Exception as exc:
+        raise_geo_error(
+            "GEO-1306",
+            (
+                f"invalid integer config for task={task_name} field={field_name}: {raw_value!r}. "
+                "Check the YAML value or related UNIMAPGEN_* environment variable."
+            ),
+            cause=exc,
+        )
+
+
 def _default_task_specs() -> Dict[str, Dict]:
     return {
         "lane": {
@@ -56,8 +72,13 @@ def load_task_schemas(serialization_cfg: Dict) -> Dict[str, TaskSchema]:
         if geometry_type not in _ALLOWED_GEOMETRY_TYPES:
             raise_geo_error("GEO-1302", f"unsupported geometry type for task {name}: {geometry_type}")
         raw_max_features = raw.get("max_features", 0)
-        max_features = int(raw_max_features) if raw_max_features is not None else 0
-        min_points = int(raw.get("min_points_per_feature", 2 if geometry_type == "linestring" else 3))
+        max_features = _parse_int_field(name, "max_features", raw_max_features, 0)
+        min_points = _parse_int_field(
+            name,
+            "min_points_per_feature",
+            raw.get("min_points_per_feature", 2 if geometry_type == "linestring" else 3),
+            2 if geometry_type == "linestring" else 3,
+        )
         out[name] = TaskSchema(
             name=name,
             collection_name=str(raw.get("collection_name", task_name)).strip(),

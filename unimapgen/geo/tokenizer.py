@@ -13,7 +13,7 @@ os.environ.setdefault("TRANSFORMERS_NO_FLAX", "1")
 try:
     from transformers import AutoTokenizer
     _TRANSFORMERS_IMPORT_ERROR = None
-except Exception as exc:  # pragma: no cover
+except Exception as exc:
     AutoTokenizer = None
     _TRANSFORMERS_IMPORT_ERROR = exc
 

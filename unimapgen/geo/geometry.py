@@ -113,6 +113,7 @@ class TileWindow:
 
 
 def compute_mask_bbox(mask: np.ndarray) -> Optional[Tuple[int, int, int, int]]:
+    """计算 review mask 中白色可信区域的最小外接框。"""
     ys, xs = np.where(mask > 0)
     if ys.size == 0 or xs.size == 0:
         return None
@@ -129,6 +130,7 @@ def expand_bbox(
     width: int,
     height: int,
 ) -> Tuple[int, int, int, int]:
+    """在已有 bbox 基础上向四周扩张，并限制在图像边界内。"""
     if bbox is None:
         return 0, 0, int(width), int(height)
     x0, y0, x1, y1 = bbox
@@ -149,6 +151,7 @@ def generate_tile_windows(
     region_bbox: Optional[Tuple[int, int, int, int]] = None,
     keep_margin_px: int = 0,
 ) -> List[TileWindow]:
+
     width = int(width)
     height = int(height)
     tile_size_px = max(1, int(tile_size_px))
@@ -194,6 +197,7 @@ def annotate_tile_windows_with_mask(
     tile_windows: Sequence[TileWindow],
     mask: Optional[np.ndarray],
 ) -> List[TileWindow]:
+    """统计每个候选 patch 内 review mask 的覆盖率和白像素数。"""
     if mask is None:
         return [TileWindow.from_dict(window.to_dict()) for window in tile_windows]
     out: List[TileWindow] = []
@@ -246,6 +250,7 @@ def audit_tile_window_selection(
     max_tiles: Optional[int] = None,
     fallback_to_all_if_empty: bool = True,
 ) -> Tuple[List[TileWindow], List[dict]]:
+    """根据 mask 阈值和数量上限，筛出最终要保留的 patch，并记录审计信息。"""
     all_windows = list(tile_windows)
     filtered = [
         window
@@ -293,6 +298,7 @@ def build_resize_context(
     target_size: int,
     crop_bbox: Optional[Tuple[int, int, int, int]] = None,
 ) -> ResizeContext:
+
     if crop_bbox is None:
         crop_bbox = (0, 0, int(width), int(height))
     x0, y0, x1, y1 = crop_bbox

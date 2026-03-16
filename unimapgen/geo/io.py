@@ -80,10 +80,13 @@ def read_rgb_geotiff(
     band_indices: Sequence[int],
     crop_bbox: Optional[Sequence[int]] = None,
 ) -> tuple[np.ndarray, RasterMeta]:
+
+
     try:
         with rasterio_open(path) as ds:
             bands = [int(x) for x in band_indices]
             if crop_bbox is not None:
+
                 x0, y0, x1, y1 = [int(v) for v in crop_bbox]
                 window = Window(
                     col_off=int(x0),
@@ -350,7 +353,7 @@ def pixel_features_to_geojson(
                     rings_world = [pixel_to_world(ring, raster_meta=raster_meta) for ring in rings_px]
                     rings_world = [ring for ring in rings_world if ring.shape[0] >= task_schema.min_points_per_feature]
                 elif points_world.shape[0] >= task_schema.min_points_per_feature:
-                    # Some intermediate polygon records only keep the outer boundary in `points`.
+
                     rings_world = [points_world]
                 if not rings_world:
                     continue

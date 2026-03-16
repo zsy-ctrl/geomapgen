@@ -25,9 +25,9 @@ class SimpleBEVEncoder(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.backbone(x)
         x = self.proj(x)
-        x = self.pool(x)  # [B, D, Hm, Wm]
+        x = self.pool(x)
         b, d, h, w = x.shape
-        x = x.view(b, d, h * w).transpose(1, 2).contiguous()  # [B, M, D]
+        x = x.view(b, d, h * w).transpose(1, 2).contiguous()
         return x
 
 
@@ -85,10 +85,10 @@ class UniMapGenV1(nn.Module):
         prompt_types: torch.Tensor = None,
         prompt_tokens: torch.Tensor = None,
     ) -> torch.Tensor:
-        memory = self.encoder(image)  # [B, M, D]
+        memory = self.encoder(image)
         memory_pad_mask = torch.zeros((memory.shape[0], memory.shape[1]), device=memory.device, dtype=torch.bool)
         if self.use_pv and pv_images is not None:
-            # v1 pv_images shape: [B, L, C, H, W], currently L=1.
+
             b, l, c, h, w = pv_images.shape
             pv_flat = pv_images.view(b * l, c, h, w)
             pv_mem = self.pv_encoder(pv_flat)
@@ -97,7 +97,7 @@ class UniMapGenV1(nn.Module):
             pv_mask = torch.zeros((pv_mem.shape[0], pv_mem.shape[1]), device=memory.device, dtype=torch.bool)
             memory_pad_mask = torch.cat([memory_pad_mask, pv_mask], dim=1)
         if self.use_text_prompt and prompt_types is not None:
-            p = self.prompt_emb(prompt_types.long()).unsqueeze(1)  # [B, 1, D]
+            p = self.prompt_emb(prompt_types.long()).unsqueeze(1)
             memory = torch.cat([memory, p], dim=1)
             p_mask = torch.zeros((p.shape[0], p.shape[1]), device=memory.device, dtype=torch.bool)
             memory_pad_mask = torch.cat([memory_pad_mask, p_mask], dim=1)
@@ -113,7 +113,7 @@ class UniMapGenV1(nn.Module):
         pos = torch.arange(t, device=decoder_input_ids.device).unsqueeze(0).expand(b, t)
         x = self.tok_emb(decoder_input_ids) + self.pos_emb(pos)
 
-        # Causal mask for autoregressive decoding.
+
         causal = torch.triu(torch.ones(t, t, device=decoder_input_ids.device, dtype=torch.bool), diagonal=1)
         pad_mask = decoder_input_ids.eq(self.pad_id)
         out = self.decoder(

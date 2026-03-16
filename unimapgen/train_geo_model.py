@@ -305,16 +305,20 @@ def run_val(
 
 
 def run_training(config_path: str, mode_override: str = "") -> None:
+
     cfg = load_yaml(config_path)
     if mode_override:
         cfg.setdefault("model", {})
         cfg["model"]["llm_train_mode"] = str(mode_override)
 
+
     set_seed(int(cfg["seed"]))
+
     train_cfg = cfg["train"]
     resume_checkpoint = str(train_cfg.get("init_checkpoint", "")).strip()
     out_dir = make_output_dir(train_cfg=train_cfg, resume_checkpoint=resume_checkpoint)
     os.makedirs(out_dir, exist_ok=True)
+
 
     try:
         with open(os.path.join(out_dir, "config_snapshot.yaml"), "w", encoding="utf-8") as f:
@@ -333,8 +337,11 @@ def run_training(config_path: str, mode_override: str = "") -> None:
             exc=exc,
         )
 
+
     task_schemas, text_tokenizer, collator, model = build_geo_components(cfg)
     artifact_cfg = get_artifact_export_cfg(cfg)
+
+
     train_set = build_geo_dataset(
         cfg=cfg,
         split=str(cfg["data"]["train_split"]),
@@ -353,7 +360,9 @@ def run_training(config_path: str, mode_override: str = "") -> None:
         crop_to_review_mask=bool(cfg["data"].get("val_crop_to_review_mask", False)),
         stage="eval",
     )
+
     checkpoint_obj = maybe_load_model_checkpoint(model, resume_checkpoint)
+
 
     if bool(artifact_cfg["enabled"]):
         band_indices = [int(x) for x in cfg["data"].get("band_indices", [1, 2, 3])]
@@ -379,6 +388,7 @@ def run_training(config_path: str, mode_override: str = "") -> None:
             max_patch_images_per_sample=int(artifact_cfg["max_patch_images_per_sample"]),
         )
 
+
     batch_size = int(train_cfg["batch_size"])
     val_batch_size = int(train_cfg.get("val_batch_size", batch_size))
     num_workers = int(cfg["data"].get("num_workers", 0))
@@ -388,6 +398,8 @@ def run_training(config_path: str, mode_override: str = "") -> None:
         train_cfg.get("val_sample_patch_sequential", sample_patch_sequential),
         default=sample_patch_sequential,
     )
+
+
     optimize_per_sample = _cfg_bool(
         train_cfg.get("optimize_per_sample", sample_patch_sequential),
         default=sample_patch_sequential,
@@ -396,6 +408,8 @@ def run_training(config_path: str, mode_override: str = "") -> None:
     epoch_is_single_sample = _cfg_bool(train_cfg.get("epoch_is_single_sample", True), default=True)
     sample_to_indices = _group_sample_indices(getattr(train_set, "items", []), task_order=task_order)
     sample_ids_in_order = list(sample_to_indices.keys())
+
+
     if val_sample_patch_sequential:
         val_loader = DataLoader(
             val_set,
@@ -420,8 +434,11 @@ def run_training(config_path: str, mode_override: str = "") -> None:
             collate_fn=collator,
         )
 
+
     device = select_torch_device(prefer_cuda=True)
     model.to(device)
+
+
     llm_dtype = "unknown"
     llm_param_dtype = "unknown"
     sat_proj_dtype = "unknown"
@@ -447,6 +464,8 @@ def run_training(config_path: str, mode_override: str = "") -> None:
         weight_decay=float(train_cfg.get("weight_decay", 0.01)),
     )
     scaler = torch.amp.GradScaler("cuda", enabled=bool(train_cfg.get("amp", False)) and device.type == "cuda")
+
+
     resume_state = maybe_resume_training_state(
         optimizer=optimizer,
         scaler=scaler,
@@ -564,6 +583,7 @@ def run_training(config_path: str, mode_override: str = "") -> None:
         flush=True,
     )
 
+
     for epoch in range(start_epoch, epochs + 1):
         if device.type == "cuda":
             torch.cuda.empty_cache()
@@ -619,6 +639,8 @@ def run_training(config_path: str, mode_override: str = "") -> None:
         epoch_pred_features: dict[str, list[dict]] = {name: [] for name in task_schemas.keys()}
         epoch_raster_meta = None
         max_train_batches_cfg = int(artifact_cfg["max_batches_per_epoch"])
+
+
         for batch_index, batch in enumerate(pbar):
             batch_sample_id = str(batch["sample_ids"][0]) if batch.get("sample_ids") else f"batch_{batch_index}"
             current_lr = cosine_lr(
@@ -684,6 +706,7 @@ def run_training(config_path: str, mode_override: str = "") -> None:
                     )
                 except Exception:
                     pass
+
 
             ep_loss += raw_loss_value * batch["image"].shape[0]
             ep_count += batch["image"].shape[0]
@@ -769,6 +792,8 @@ def run_training(config_path: str, mode_override: str = "") -> None:
         if device.type == "cuda":
             torch.cuda.empty_cache()
         val_t0 = time.time()
+
+
         val_loss, val_token_acc = run_val(
             model,
             val_loader,
@@ -803,6 +828,7 @@ def run_training(config_path: str, mode_override: str = "") -> None:
         if best_updated:
             atomic_torch_save(checkpoint_obj, best_path)
         checkpoint_sec = time.time() - save_t0
+
 
         record = {
             "epoch": epoch,

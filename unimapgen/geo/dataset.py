@@ -190,7 +190,10 @@ class GeoVectorDataset(Dataset):
         return len(self.items)
 
     def __getitem__(self, idx: int) -> Dict:
+
+
         item = self.items[idx]
+
         base = self._load_or_build_cached_base(item=item)
         raster_meta = base["raster_meta"]
         if isinstance(raster_meta, dict):
@@ -218,6 +221,7 @@ class GeoVectorDataset(Dataset):
                 hflip=hflip,
                 vflip=vflip,
             )
+
 
         target_items = uv_feature_records_to_target_items(
             feature_records=target_features_uv,
@@ -291,6 +295,8 @@ class GeoVectorDataset(Dataset):
         }
 
     def _resize_cropped_image(self, crop_hwc: np.ndarray, resize_ctx) -> np.ndarray:
+
+
         crop_u8 = np.asarray(np.clip(crop_hwc, 0.0, 255.0), dtype=np.uint8)
         pil = Image.fromarray(crop_u8)
         pil = pil.resize((resize_ctx.resized_width, resize_ctx.resized_height), Image.BILINEAR)
@@ -303,6 +309,8 @@ class GeoVectorDataset(Dataset):
         return np.transpose(canvas / 255.0, (2, 0, 1)).astype(np.float32)
 
     def _load_or_build_cached_base(self, item: Dict) -> Dict:
+
+
         cache_path = str(item.get("cache_path", "")).strip()
         if bool(self.cfg.cache_enabled) and cache_path and os.path.isfile(cache_path):
             self.cache_runtime_hits += 1
@@ -317,6 +325,7 @@ class GeoVectorDataset(Dataset):
         if bool(self.cfg.cache_enabled):
             self.cache_runtime_misses += 1
 
+
         image_hwc, raster_meta = read_rgb_geotiff(
             path=item["image_path"],
             band_indices=self.cfg.band_indices,
@@ -327,6 +336,7 @@ class GeoVectorDataset(Dataset):
             review_mask = read_binary_mask(path=item["review_mask_path"], threshold=self.cfg.mask_threshold)
         image_hwc = np.clip(image_hwc, 0.0, 255.0)
         if review_mask is not None:
+
             image_hwc = self._apply_review_mask_to_image(
                 image_hwc=image_hwc,
                 review_mask=review_mask,
@@ -341,6 +351,7 @@ class GeoVectorDataset(Dataset):
         image_chw = self._resize_cropped_image(crop_hwc=image_hwc, resize_ctx=resize_ctx)
 
         raw_features = self.features_by_key[item["feature_key"]]
+
         target_features_abs = self._prepare_features(
             raw_features=raw_features,
             task_schema=item["task_schema"],
@@ -494,6 +505,7 @@ class GeoVectorDataset(Dataset):
         review_mask: np.ndarray,
         crop_bbox: Optional[Sequence[int]],
     ) -> np.ndarray:
+        """把当前 patch 图像中不可信的 review mask 黑区直接置零。"""
         mask_crop = self._crop_mask_to_bbox(review_mask=review_mask, crop_bbox=crop_bbox)
         if mask_crop.ndim != 2:
             return np.asarray(image_hwc, dtype=np.float32)
@@ -571,6 +583,8 @@ class GeoVectorDataset(Dataset):
         review_bbox: Optional[Sequence[int]],
         crop_bbox: Optional[Sequence[int]],
     ) -> Tuple[List[Optional[Dict]], List[Dict]]:
+
+
         if not bool(self.cfg.tiling_enabled):
             return [None], [
                 {
@@ -768,6 +782,7 @@ class GeoVectorDataset(Dataset):
         state_bboxes: Optional[Sequence[Tuple[int, int, int, int]]],
         max_features: int,
     ) -> List[Dict]:
+
         out: List[Dict] = []
         max_features_limit = int(max_features)
         pixel_size_meter = max(abs(float(raster_meta.pixel_size_x)), 1e-6)

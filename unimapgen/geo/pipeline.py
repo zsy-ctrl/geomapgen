@@ -44,6 +44,7 @@ def select_enabled_task_schemas(cfg: Dict, task_schemas: Dict[str, TaskSchema]) 
 
 
 def get_stage_tiling_cfg(cfg: Dict, stage: str) -> Dict:
+
     tiling_cfg = cfg.get("tiling", {})
     stage_cfg = tiling_cfg.get(stage, {})
     default_enabled = bool(stage in {"train", "eval", "predict"})
@@ -70,8 +71,14 @@ def build_geo_dataset(
     crop_to_review_mask: Optional[bool] = None,
     stage: str = "train",
 ):
+
+
     data_cfg = cfg["data"]
+
+
     enabled_tasks = list(select_enabled_task_schemas(cfg=cfg, task_schemas=task_schemas).keys())
+
+
     task_to_label_relpath = {}
     label_cfg = data_cfg.get("label_relpaths", {})
     for task_name in enabled_tasks:
@@ -208,8 +215,14 @@ def maybe_load_model_checkpoint(model: torch.nn.Module, checkpoint_path: str) ->
     if not checkpoint_path:
         return {}
     try:
+
+
         ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+
+
         state = ckpt["model"] if isinstance(ckpt, dict) and "model" in ckpt else ckpt
+
+
         if isinstance(state, dict):
             model_state = model.state_dict()
             filtered_state = {}
@@ -231,6 +244,8 @@ def maybe_load_model_checkpoint(model: torch.nn.Module, checkpoint_path: str) ->
             state = filtered_state
         else:
             skipped_shape = []
+
+
         missing, unexpected = model.load_state_dict(state, strict=False)
         print(
             f"[Init] Loaded checkpoint={checkpoint_path} "

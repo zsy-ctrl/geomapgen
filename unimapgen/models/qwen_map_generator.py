@@ -18,14 +18,14 @@ os.environ.setdefault("TRANSFORMERS_NO_FLAX", "1")
 try:
     from transformers import AutoModelForCausalLM
     _TRANSFORMERS_IMPORT_ERROR = None
-except Exception as exc:  # pragma: no cover
+except Exception as exc:
     AutoModelForCausalLM = None
     _TRANSFORMERS_IMPORT_ERROR = exc
 
 try:
     from peft import LoraConfig, TaskType, get_peft_model
     _PEFT_IMPORT_ERROR = None
-except Exception as exc:  # pragma: no cover
+except Exception as exc:
     LoraConfig = None
     TaskType = None
     get_peft_model = None
