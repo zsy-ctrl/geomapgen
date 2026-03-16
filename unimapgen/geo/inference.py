@@ -496,6 +496,10 @@ def run_tiled_sample_prediction(
             "tile_count": 0,
             "decoded_ok_count": 0,
             "non_empty_feature_tiles": 0,
+            "pred_feature_count_sum": 0,
+            "kept_feature_count_sum": 0,
+            "all_empty_geojson_tiles": 0,
+            "dropped_by_keep_bbox_tiles": 0,
         }
 
         for tile_index, tile_window in enumerate(tile_windows):
@@ -678,6 +682,12 @@ def run_tiled_sample_prediction(
             task_parse_stats["tile_count"] += 1
             if decoded_ok:
                 task_parse_stats["decoded_ok_count"] += 1
+            task_parse_stats["pred_feature_count_sum"] += int(len(pred_features_abs))
+            task_parse_stats["kept_feature_count_sum"] += int(len(kept_current))
+            if pred_geojson is not None and int(len(pred_features_abs)) == 0:
+                task_parse_stats["all_empty_geojson_tiles"] += 1
+            if int(len(pred_features_abs)) > 0 and int(len(kept_current)) == 0:
+                task_parse_stats["dropped_by_keep_bbox_tiles"] += 1
             if pred_features_abs:
                 task_parse_stats["non_empty_feature_tiles"] += 1
 

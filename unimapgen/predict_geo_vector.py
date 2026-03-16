@@ -178,6 +178,21 @@ def main() -> None:
                     "raw_text": raw_text_path,
                 }
                 continue
+            if int(parse_stats.get("kept_feature_count_sum", 0)) == 0:
+                save_json(
+                    os.path.join(sample_out_dir, f"{task_schema.collection_name}.all_empty.json"),
+                    {
+                        "task_name": str(task_name),
+                        "parse_stats": parse_stats,
+                        "raw_tiles_path": raw_output_path,
+                        "raw_text_path": raw_text_path,
+                        "hint": (
+                            "tiles decoded, but no final kept features remained. "
+                            "Check whether the model is outputting empty FeatureCollections or "
+                            "whether keep_bbox filtering removed all predicted features."
+                        ),
+                    },
+                )
             geojson_dict = final_geojsons.get(task_name)
             if geojson_dict is None:
                 continue

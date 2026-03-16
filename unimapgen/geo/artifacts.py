@@ -124,10 +124,28 @@ def export_tile_audit_records(
     max_patch_images_per_sample: int = 0,
 ) -> None:
     ensure_dir(output_dir)
-    save_json(os.path.join(output_dir, "tile_audit.json"), list(audit_records))
+    records = list(audit_records)
+    save_json(os.path.join(output_dir, "tile_audit.json"), records)
+    selected_count = sum(1 for record in records if bool(record.get("selected", False)))
+    discarded_count = sum(1 for record in records if not bool(record.get("selected", False)))
+    save_json(
+        os.path.join(output_dir, "tile_audit_summary.json"),
+        {
+            "record_count": int(len(records)),
+            "selected_count": int(selected_count),
+            "discarded_count": int(discarded_count),
+            "is_empty": bool(len(records) == 0),
+            "hint": (
+                "no tile audit records were generated; this usually means you are looking at the wrong output "
+                "directory, or the tiling stage produced no candidate windows after review-mask/selection filtering"
+                if len(records) == 0
+                else ""
+            ),
+        },
+    )
 
     per_sample_counts: Dict[str, int] = defaultdict(int)
-    for record in audit_records:
+    for record in records:
         sample_id = str(record.get("sample_id", "sample"))
         selected = bool(record.get("selected", False))
         if selected and not bool(save_kept_patches):
