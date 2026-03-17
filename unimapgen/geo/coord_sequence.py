@@ -130,6 +130,133 @@ def boundary_side_for_point_uv(point_xy: Sequence[float], image_size: int, tol_p
     return side if distances[side] <= float(tol_px) else "none"
 
 
+def collect_boundary_cut_points_uv(
+    points_uv: np.ndarray,
+    image_size: int,
+    tol_px: float = 1.5,
+) -> Tuple[np.ndarray, List[str]]:
+    pts = np.asarray(points_uv, dtype=np.float32)
+    if pts.ndim != 2 or pts.shape[0] == 0:
+        return np.zeros((0, 2), dtype=np.float32), []
+    cut_points: List[np.ndarray] = []
+    cut_sides: List[str] = []
+    for point in pts:
+        side = boundary_side_for_point_uv(point_xy=point, image_size=image_size, tol_px=tol_px)
+        if side == "none":
+            continue
+        if any(np.allclose(point, existing, atol=1e-3) for existing in cut_points):
+            if side not in cut_sides:
+                cut_sides.append(side)
+            continue
+        cut_points.append(np.asarray(point, dtype=np.float32))
+        if side not in cut_sides:
+            cut_sides.append(side)
+    if not cut_points:
+        return np.zeros((0, 2), dtype=np.float32), []
+    return np.stack(cut_points, axis=0).astype(np.float32), list(cut_sides)
+
+
+def line_cut_metadata_from_uv(
+    points_uv: np.ndarray,
+    image_size: int,
+    cut_start: bool = False,
+    cut_end: bool = False,
+    tol_px: float = 1.5,
+) -> Dict:
+    pts = np.asarray(points_uv, dtype=np.float32)
+    if pts.ndim != 2 or pts.shape[0] == 0:
+        return {
+            "cut_in": "none",
+            "cut_out": "none",
+            "cut_points_uv": np.zeros((0, 2), dtype=np.float32),
+            "cut_sides": [],
+        }
+    cut_points: List[np.ndarray] = []
+    cut_sides: List[str] = []
+    cut_in = "none"
+    cut_out = "none"
+    start_side = boundary_side_for_point_uv(points_uv[0], image_size=image_size, tol_px=tol_px)
+    end_side = boundary_side_for_point_uv(points_uv[-1], image_size=image_size, tol_px=tol_px)
+    if bool(cut_start):
+        cut_in = start_side
+        if cut_in == "none":
+            cut_in = "internal"
+        cut_points.append(np.asarray(points_uv[0], dtype=np.float32))
+        if cut_in not in {"none", "internal"} and cut_in not in cut_sides:
+            cut_sides.append(cut_in)
+    if bool(cut_end):
+        cut_out = end_side
+        if cut_out == "none":
+            cut_out = "internal"
+        if not any(np.allclose(points_uv[-1], existing, atol=1e-3) for existing in cut_points):
+            cut_points.append(np.asarray(points_uv[-1], dtype=np.float32))
+        if cut_out not in {"none", "internal"} and cut_out not in cut_sides:
+            cut_sides.append(cut_out)
+    if cut_in == "none" and start_side != "none":
+        cut_in = start_side
+        if not any(np.allclose(points_uv[0], existing, atol=1e-3) for existing in cut_points):
+            cut_points.append(np.asarray(points_uv[0], dtype=np.float32))
+        if start_side not in cut_sides:
+            cut_sides.append(start_side)
+    if cut_out == "none" and end_side != "none":
+        cut_out = end_side
+        if not any(np.allclose(points_uv[-1], existing, atol=1e-3) for existing in cut_points):
+            cut_points.append(np.asarray(points_uv[-1], dtype=np.float32))
+        if end_side not in cut_sides:
+            cut_sides.append(end_side)
+    if not cut_points:
+        boundary_points, boundary_sides = collect_boundary_cut_points_uv(
+            points_uv=pts,
+            image_size=image_size,
+            tol_px=tol_px,
+        )
+        cut_points = [point.astype(np.float32) for point in boundary_points]
+        cut_sides = list(boundary_sides)
+    cut_points_uv = np.stack(cut_points, axis=0).astype(np.float32) if cut_points else np.zeros((0, 2), dtype=np.float32)
+    return {
+        "cut_in": str(cut_in),
+        "cut_out": str(cut_out),
+        "cut_points_uv": cut_points_uv,
+        "cut_sides": list(cut_sides),
+    }
+
+
+def polygon_cut_metadata_from_uv(
+    rings_uv: Sequence[np.ndarray],
+    image_size: int,
+    clipped: bool = False,
+    tol_px: float = 1.5,
+) -> Dict:
+    cut_points: List[np.ndarray] = []
+    cut_sides: List[str] = []
+    for ring in rings_uv:
+        ring_points, ring_sides = collect_boundary_cut_points_uv(
+            points_uv=np.asarray(ring, dtype=np.float32),
+            image_size=image_size,
+            tol_px=tol_px,
+        )
+        for point in ring_points:
+            if not any(np.allclose(point, existing, atol=1e-3) for existing in cut_points):
+                cut_points.append(np.asarray(point, dtype=np.float32))
+        for side in ring_sides:
+            if side not in cut_sides:
+                cut_sides.append(side)
+    if not cut_points and bool(clipped):
+        return {
+            "cut_in": "internal",
+            "cut_out": "internal",
+            "cut_points_uv": np.zeros((0, 2), dtype=np.float32),
+            "cut_sides": [],
+        }
+    cut_points_uv = np.stack(cut_points, axis=0).astype(np.float32) if cut_points else np.zeros((0, 2), dtype=np.float32)
+    return {
+        "cut_in": "internal" if (bool(clipped) and cut_points_uv.shape[0] > 0) else "none",
+        "cut_out": "internal" if (bool(clipped) and cut_points_uv.shape[0] > 0) else "none",
+        "cut_points_uv": cut_points_uv,
+        "cut_sides": list(cut_sides),
+    }
+
+
 def detect_feature_boundary_sides(points_uv: np.ndarray, image_size: int, tol_px: float = 1.5) -> List[str]:
     pts = np.asarray(points_uv, dtype=np.float32)
     if pts.ndim != 2 or pts.shape[0] == 0:
@@ -250,18 +377,23 @@ def uv_feature_records_to_target_items(
             )
         if points_uv.shape[0] < int(task_schema.min_points_per_feature):
             continue
-        cut_in = "none"
-        cut_out = "none"
         if task_schema.geometry_type == "linestring":
-            cut_in = boundary_side_for_point_uv(points_uv[0], image_size=image_size, tol_px=boundary_tol_px)
-            cut_out = boundary_side_for_point_uv(points_uv[-1], image_size=image_size, tol_px=boundary_tol_px)
-            if cut_in == "none" and bool(feature.get("cut_start", False)):
-                cut_in = "internal"
-            if cut_out == "none" and bool(feature.get("cut_end", False)):
-                cut_out = "internal"
-        elif bool(feature.get("clipped", False)):
-            cut_in = "internal"
-            cut_out = "internal"
+            cut_meta = line_cut_metadata_from_uv(
+                points_uv=points_uv,
+                image_size=image_size,
+                cut_start=bool(feature.get("cut_start", False)),
+                cut_end=bool(feature.get("cut_end", False)),
+                tol_px=boundary_tol_px,
+            )
+        else:
+            cut_meta = polygon_cut_metadata_from_uv(
+                rings_uv=rings_uv or [points_uv],
+                image_size=image_size,
+                clipped=bool(feature.get("clipped", False)),
+                tol_px=boundary_tol_px,
+            )
+        cut_in = str(cut_meta.get("cut_in", "none"))
+        cut_out = str(cut_meta.get("cut_out", "none"))
         out.append(
             {
                 "geometry_type": task_schema.geometry_type,
@@ -270,7 +402,9 @@ def uv_feature_records_to_target_items(
                 "rings_uv": [ring.astype(np.float32) for ring in rings_uv] if rings_uv else None,
                 "cut_in": str(cut_in),
                 "cut_out": str(cut_out),
-                "source": "state" if cut_in in {"left", "top"} else "local",
+                "cut_points_uv": np.asarray(cut_meta.get("cut_points_uv", []), dtype=np.float32),
+                "cut_sides": [str(side) for side in cut_meta.get("cut_sides", [])],
+                "source": "state" if cut_in in {"left", "top"} or any(side in {"left", "top"} for side in cut_meta.get("cut_sides", [])) else "local",
             }
         )
     out.sort(key=lambda item: _item_sort_key(item=item, geometry_type=task_schema.geometry_type))
@@ -298,6 +432,36 @@ def uv_feature_records_to_state_items(
             )
         if points_uv.shape[0] < int(task_schema.min_points_per_feature):
             continue
+        if task_schema.geometry_type == "polygon" and rings_uv:
+            cut_meta = polygon_cut_metadata_from_uv(
+                rings_uv=rings_uv,
+                image_size=image_size,
+                clipped=bool(feature.get("clipped", False)),
+                tol_px=boundary_tol_px,
+            )
+            cut_points_uv = np.asarray(cut_meta.get("cut_points_uv", []), dtype=np.float32)
+            cut_sides = [str(side) for side in cut_meta.get("cut_sides", [])]
+            if cut_points_uv.ndim == 2 and cut_points_uv.shape[0] > 0:
+                for side in cut_sides:
+                    if side not in {"left", "top"}:
+                        continue
+                    side_points = [
+                        point.astype(np.float32)
+                        for point in cut_points_uv
+                        if boundary_side_for_point_uv(point_xy=point, image_size=image_size, tol_px=boundary_tol_px) == side
+                    ]
+                    if not side_points:
+                        continue
+                    anchors = np.stack(side_points, axis=0).astype(np.float32)
+                    out.append(
+                        {
+                            "geometry_type": task_schema.geometry_type,
+                            "side": side,
+                            "points_uv": sample_anchor_points(points_uv=anchors, max_points=anchor_max_points),
+                        }
+                    )
+                if cut_points_uv.shape[0] > 0:
+                    continue
         sides = detect_feature_boundary_sides(points_uv=points_uv, image_size=image_size, tol_px=boundary_tol_px)
         for side in sides:
             if side not in {"left", "top"}:
@@ -340,6 +504,13 @@ def uv_items_to_abs_feature_records(
                 "rings": [ring.astype(np.float32) for ring in rings_abs] if rings_abs else None,
                 "cut_in": str(item.get("cut_in", "none")),
                 "cut_out": str(item.get("cut_out", "none")),
+                "cut_sides": [str(side) for side in item.get("cut_sides", [])],
+                "cut_points": points_uv_to_abs(
+                    points_uv=np.asarray(item.get("cut_points_uv", []), dtype=np.float32),
+                    resize_ctx=resize_ctx,
+                ).astype(np.float32)
+                if np.asarray(item.get("cut_points_uv", []), dtype=np.float32).ndim == 2
+                else np.zeros((0, 2), dtype=np.float32),
                 "source": str(item.get("source", "local")),
             }
         )

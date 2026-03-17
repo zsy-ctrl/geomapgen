@@ -8,7 +8,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
-from PIL import Image
+from PIL import Image, ImageDraw
 from torch.utils.data import Dataset
 from unimapgen.utils import ensure_dir
 
@@ -761,37 +761,123 @@ class GeoVectorDataset(Dataset):
             return []
         if review_mask is None or not bool(self.cfg.feature_filter_by_review_mask):
             return [{"points": pts.astype(np.float32), "cut_start": False, "cut_end": False}]
+
+        dense_pts = self._densify_line_for_mask(points_xy=pts, step_px=1.0)
         height, width = review_mask.shape[:2]
-        cols = np.clip(np.round(pts[:, 0]).astype(np.int64), 0, width - 1)
-        rows = np.clip(np.round(pts[:, 1]).astype(np.int64), 0, height - 1)
+        cols = np.clip(np.round(dense_pts[:, 0]).astype(np.int64), 0, width - 1)
+        rows = np.clip(np.round(dense_pts[:, 1]).astype(np.int64), 0, height - 1)
         inside = (review_mask[rows, cols] > 0).tolist()
         out: List[Dict] = []
         start = None
+        piece_points: List[np.ndarray] = []
         for idx, flag in enumerate(inside):
             if flag and start is None:
+                piece_points = []
+                if idx > 0:
+                    transition = self._refine_mask_transition_point(
+                        review_mask=review_mask,
+                        point_a=dense_pts[idx - 1],
+                        point_b=dense_pts[idx],
+                        inside_a=bool(inside[idx - 1]),
+                        inside_b=bool(flag),
+                    )
+                    if transition is not None:
+                        piece_points.append(transition.astype(np.float32))
                 start = idx
+            if flag and start is not None:
+                if not piece_points or not np.allclose(piece_points[-1], dense_pts[idx], atol=1e-3):
+                    piece_points.append(dense_pts[idx].astype(np.float32))
             if (not flag) and start is not None:
-                piece = pts[start:idx]
-                if piece.shape[0] >= int(task_schema.min_points_per_feature):
+                if idx > 0:
+                    transition = self._refine_mask_transition_point(
+                        review_mask=review_mask,
+                        point_a=dense_pts[idx - 1],
+                        point_b=dense_pts[idx],
+                        inside_a=bool(inside[idx - 1]),
+                        inside_b=bool(flag),
+                    )
+                    if transition is not None and (
+                        not piece_points or not np.allclose(piece_points[-1], transition, atol=1e-3)
+                    ):
+                        piece_points.append(transition.astype(np.float32))
+                piece = np.asarray(piece_points, dtype=np.float32)
+                if piece.ndim == 2 and piece.shape[0] >= int(task_schema.min_points_per_feature):
                     out.append(
                         {
                             "points": piece.astype(np.float32),
-                            "cut_start": bool(start > 0),
-                            "cut_end": bool(idx < pts.shape[0]),
+                            "cut_start": bool(start > 0) or not np.allclose(piece[0], pts[0], atol=1e-3),
+                            "cut_end": bool(idx < dense_pts.shape[0]) or not np.allclose(piece[-1], pts[-1], atol=1e-3),
                         }
                     )
                 start = None
+                piece_points = []
         if start is not None:
-            piece = pts[start:]
-            if piece.shape[0] >= int(task_schema.min_points_per_feature):
+            piece = np.asarray(piece_points, dtype=np.float32)
+            if piece.ndim == 2 and piece.shape[0] >= int(task_schema.min_points_per_feature):
                 out.append(
                     {
                         "points": piece.astype(np.float32),
-                        "cut_start": bool(start > 0),
-                        "cut_end": False,
+                        "cut_start": bool(start > 0) or not np.allclose(piece[0], pts[0], atol=1e-3),
+                        "cut_end": not np.allclose(piece[-1], pts[-1], atol=1e-3),
                     }
                 )
         return out
+
+    def _densify_line_for_mask(self, points_xy: np.ndarray, step_px: float = 1.0) -> np.ndarray:
+        pts = np.asarray(points_xy, dtype=np.float32)
+        if pts.ndim != 2 or pts.shape[0] <= 1:
+            return pts.astype(np.float32)
+        out: List[np.ndarray] = [pts[0].astype(np.float32)]
+        step = max(0.25, float(step_px))
+        for start_pt, end_pt in zip(pts[:-1], pts[1:]):
+            seg = np.asarray(end_pt - start_pt, dtype=np.float32)
+            seg_len = float(np.linalg.norm(seg))
+            steps = max(1, int(np.ceil(seg_len / step)))
+            for t in np.linspace(0.0, 1.0, steps + 1, dtype=np.float32)[1:]:
+                out.append((start_pt + seg * float(t)).astype(np.float32))
+        return np.stack(out, axis=0).astype(np.float32)
+
+    def _mask_contains_point(self, review_mask: np.ndarray, point_xy: np.ndarray) -> bool:
+        mask = np.asarray(review_mask)
+        if mask.ndim != 2 or mask.shape[0] <= 0 or mask.shape[1] <= 0:
+            return False
+        x = int(np.clip(round(float(point_xy[0])), 0, int(mask.shape[1]) - 1))
+        y = int(np.clip(round(float(point_xy[1])), 0, int(mask.shape[0]) - 1))
+        return bool(mask[y, x] > 0)
+
+    def _mask_contains_points(self, review_mask: np.ndarray, points_xy: np.ndarray) -> np.ndarray:
+        pts = np.asarray(points_xy, dtype=np.float32)
+        mask = np.asarray(review_mask)
+        if pts.ndim != 2 or pts.shape[0] <= 0 or mask.ndim != 2 or mask.shape[0] <= 0 or mask.shape[1] <= 0:
+            return np.zeros((0,), dtype=bool)
+        cols = np.clip(np.round(pts[:, 0]).astype(np.int64), 0, int(mask.shape[1]) - 1)
+        rows = np.clip(np.round(pts[:, 1]).astype(np.int64), 0, int(mask.shape[0]) - 1)
+        return (mask[rows, cols] > 0).astype(bool)
+
+    def _refine_mask_transition_point(
+        self,
+        review_mask: np.ndarray,
+        point_a: np.ndarray,
+        point_b: np.ndarray,
+        inside_a: bool,
+        inside_b: bool,
+        iterations: int = 8,
+    ) -> Optional[np.ndarray]:
+        pa = np.asarray(point_a, dtype=np.float32)
+        pb = np.asarray(point_b, dtype=np.float32)
+        if bool(inside_a) == bool(inside_b):
+            return None
+        low = pa.copy()
+        high = pb.copy()
+        low_inside = bool(inside_a)
+        for _ in range(max(1, int(iterations))):
+            mid = ((low + high) * 0.5).astype(np.float32)
+            mid_inside = self._mask_contains_point(review_mask=review_mask, point_xy=mid)
+            if mid_inside == low_inside:
+                low = mid
+            else:
+                high = mid
+        return ((low + high) * 0.5).astype(np.float32)
 
     def _line_piece_cut_flags_after_clip(
         self,
@@ -822,12 +908,60 @@ class GeoVectorDataset(Dataset):
             return False, False
         if review_mask is None or not bool(self.cfg.feature_filter_by_review_mask):
             return True, False
-        height, width = review_mask.shape[:2]
-        cols = np.clip(np.round(outer[:, 0]).astype(np.int64), 0, width - 1)
-        rows = np.clip(np.round(outer[:, 1]).astype(np.int64), 0, height - 1)
-        inside = review_mask[rows, cols] > 0
-        inside_ratio = float(inside.mean()) if inside.size > 0 else 0.0
+        dense_outer = self._densify_line_for_mask(points_xy=outer, step_px=1.0)
+        boundary_inside = self._mask_contains_points(review_mask=review_mask, points_xy=dense_outer)
+        boundary_ratio = float(boundary_inside.mean()) if boundary_inside.size > 0 else 0.0
+        area_ratio, overlap_pixels = self._polygon_mask_overlap_ratio(rings_xy=rings_xy, review_mask=review_mask)
+        inside_ratio = max(boundary_ratio, area_ratio)
+        if overlap_pixels <= 0:
+            return False, False
         return bool(inside_ratio >= float(self.cfg.feature_mask_min_inside_ratio)), bool(inside_ratio < 0.999)
+
+    def _polygon_mask_overlap_ratio(
+        self,
+        rings_xy: Sequence[np.ndarray],
+        review_mask: np.ndarray,
+    ) -> Tuple[float, int]:
+        rings = [np.asarray(ring, dtype=np.float32) for ring in rings_xy if np.asarray(ring, dtype=np.float32).ndim == 2]
+        mask = np.asarray(review_mask)
+        if not rings or mask.ndim != 2 or mask.shape[0] <= 0 or mask.shape[1] <= 0:
+            return 0.0, 0
+        all_pts = np.concatenate(rings, axis=0)
+        if all_pts.ndim != 2 or all_pts.shape[0] <= 0:
+            return 0.0, 0
+        x0 = max(0, int(np.floor(float(np.min(all_pts[:, 0])))))
+        y0 = max(0, int(np.floor(float(np.min(all_pts[:, 1])))))
+        x1 = min(int(mask.shape[1]) - 1, int(np.ceil(float(np.max(all_pts[:, 0])))))
+        y1 = min(int(mask.shape[0]) - 1, int(np.ceil(float(np.max(all_pts[:, 1])))))
+        if x1 < x0 or y1 < y0:
+            return 0.0, 0
+        local_w = int(x1 - x0 + 1)
+        local_h = int(y1 - y0 + 1)
+        canvas = Image.new("L", (local_w, local_h), 0)
+        draw = ImageDraw.Draw(canvas)
+
+        def _shift_ring(ring_xy: np.ndarray) -> List[Tuple[float, float]]:
+            ring = np.asarray(ring_xy, dtype=np.float32)
+            if ring.ndim != 2 or ring.shape[0] < 3:
+                return []
+            return [(float(pt[0] - x0), float(pt[1] - y0)) for pt in ring]
+
+        exterior = _shift_ring(rings[0])
+        if len(exterior) < 3:
+            return 0.0, 0
+        draw.polygon(exterior, fill=1, outline=1)
+        for hole_ring in rings[1:]:
+            hole = _shift_ring(hole_ring)
+            if len(hole) >= 3:
+                draw.polygon(hole, fill=0, outline=0)
+
+        polygon_mask = np.asarray(canvas, dtype=np.uint8) > 0
+        polygon_pixels = int(polygon_mask.sum())
+        if polygon_pixels <= 0:
+            return 0.0, 0
+        review_slice = mask[y0 : y1 + 1, x0 : x1 + 1] > 0
+        overlap_pixels = int(np.logical_and(polygon_mask, review_slice).sum())
+        return float(overlap_pixels) / float(max(1, polygon_pixels)), overlap_pixels
 
     def _feature_record_output_sort_key(
         self,

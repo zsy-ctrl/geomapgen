@@ -379,8 +379,16 @@ def _retain_predictions_for_keep_bbox(
 
 
 def _properties_equal(pred_props: Dict, gt_props: Dict) -> bool:
-    pred_keys = {key for key in pred_props.keys() if str(key) not in NON_TRAINING_PROPERTY_KEYS}
-    gt_keys = {key for key in gt_props.keys() if str(key) not in NON_TRAINING_PROPERTY_KEYS}
+    def _keep_key(key: object) -> bool:
+        text = str(key)
+        if text in NON_TRAINING_PROPERTY_KEYS:
+            return False
+        if text in {"CutIn", "CutOut", "CutSides", "CutPoints"}:
+            return False
+        return True
+
+    pred_keys = {key for key in pred_props.keys() if _keep_key(key)}
+    gt_keys = {key for key in gt_props.keys() if _keep_key(key)}
     if pred_keys != gt_keys:
         return False
     for key in pred_keys:

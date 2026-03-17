@@ -40,6 +40,21 @@ def _topology_constraint_text(task_key: str) -> str:
     return ""
 
 
+def _cut_constraint_text(task_key: str) -> str:
+    key = str(task_key).strip().lower()
+    if key == "lane":
+        return (
+            "If a lane is cut by the patch boundary, the final coordinate at that side must lie exactly on the boundary cut point. "
+            "Use CutIn and CutOut to mark the boundary side of the truncated endpoints, and terminate the lane at those cut points."
+        )
+    if key == "intersection":
+        return (
+            "If an intersection polygon is cut by the patch boundary, keep the polygon clipped exactly at the boundary. "
+            "Use CutPoints and CutSides to mark the boundary cut points where the polygon is truncated."
+        )
+    return ""
+
+
 def _companion_reference_text(task_key: str, companion_task_name: str, companion_geojson_text: str) -> str:
     companion_name = str(companion_task_name).strip()
     geojson_text = str(companion_geojson_text).strip()
@@ -115,6 +130,9 @@ def build_task_prompt_text(
     topology_text = _topology_constraint_text(task_key)
     if topology_text:
         parts.append(topology_text)
+    cut_text = _cut_constraint_text(task_key)
+    if cut_text:
+        parts.append(cut_text)
     companion_text = _companion_reference_text(task_key, companion_task_name, companion_geojson_text)
     if companion_text:
         parts.append(companion_text)

@@ -18,6 +18,7 @@ from .geometry import ResizeContext
 
 DEFAULT_GEOJSON_CRS = "urn:ogc:def:crs:OGC:1.3:CRS84"
 NON_TRAINING_PROPERTY_KEYS = {"Id", "RoadId"}
+CUT_METADATA_PROPERTY_KEYS = {"CutIn", "CutOut", "CutSides", "CutPoints"}
 DEFAULT_TASK_ID_ORDER = ("lane", "intersection")
 
 
@@ -335,6 +336,141 @@ def _looks_like_coordinate(value) -> bool:
     return True
 
 
+def _resize_ctx_content_bounds(resize_ctx: ResizeContext) -> tuple[float, float, float, float]:
+    left = float(resize_ctx.pad_x)
+    top = float(resize_ctx.pad_y)
+    right = float(resize_ctx.pad_x + max(1, int(resize_ctx.resized_width)) - 1)
+    bottom = float(resize_ctx.pad_y + max(1, int(resize_ctx.resized_height)) - 1)
+    return left, top, right, bottom
+
+
+def _boundary_side_for_point_in_bounds(
+    point_xy: Sequence[float],
+    bounds: tuple[float, float, float, float],
+    tol_px: float = 1.5,
+) -> str:
+    x = float(point_xy[0])
+    y = float(point_xy[1])
+    left, top, right, bottom = bounds
+    distances = {
+        "left": abs(x - left),
+        "top": abs(y - top),
+        "right": abs(x - right),
+        "bottom": abs(y - bottom),
+    }
+    side = min(distances.items(), key=lambda kv: kv[1])[0]
+    return side if distances[side] <= float(tol_px) else "none"
+
+
+def _collect_boundary_points_in_bounds(
+    points_xy: np.ndarray,
+    bounds: tuple[float, float, float, float],
+    tol_px: float = 1.5,
+) -> tuple[np.ndarray, list[str]]:
+    pts = np.asarray(points_xy, dtype=np.float32)
+    if pts.ndim != 2 or pts.shape[0] == 0:
+        return np.zeros((0, 2), dtype=np.float32), []
+    cut_points: List[np.ndarray] = []
+    cut_sides: List[str] = []
+    for point in pts:
+        side = _boundary_side_for_point_in_bounds(point_xy=point, bounds=bounds, tol_px=tol_px)
+        if side == "none":
+            continue
+        if not any(np.allclose(point, existing, atol=1e-3) for existing in cut_points):
+            cut_points.append(np.asarray(point, dtype=np.float32))
+        if side not in cut_sides:
+            cut_sides.append(side)
+    if not cut_points:
+        return np.zeros((0, 2), dtype=np.float32), []
+    return np.stack(cut_points, axis=0).astype(np.float32), list(cut_sides)
+
+
+def _line_cut_metadata_for_resize_ctx(points_uv: np.ndarray, feature: Dict, resize_ctx: ResizeContext) -> Dict:
+    pts = np.asarray(points_uv, dtype=np.float32)
+    if pts.ndim != 2 or pts.shape[0] == 0:
+        return {"CutIn": "none", "CutOut": "none", "CutSides": [], "CutPoints": []}
+    bounds = _resize_ctx_content_bounds(resize_ctx)
+    start_side = _boundary_side_for_point_in_bounds(point_xy=pts[0], bounds=bounds, tol_px=1.5)
+    end_side = _boundary_side_for_point_in_bounds(point_xy=pts[-1], bounds=bounds, tol_px=1.5)
+    cut_in = start_side if start_side != "none" else ("internal" if bool(feature.get("cut_start", False)) else "none")
+    cut_out = end_side if end_side != "none" else ("internal" if bool(feature.get("cut_end", False)) else "none")
+    cut_points: List[List[float]] = []
+    cut_sides: List[str] = []
+    if cut_in != "none":
+        cut_points.append([float(pts[0, 0]), float(pts[0, 1])])
+        if cut_in not in {"internal"} and cut_in not in cut_sides:
+            cut_sides.append(cut_in)
+    if cut_out != "none":
+        candidate = [float(pts[-1, 0]), float(pts[-1, 1])]
+        if candidate not in cut_points:
+            cut_points.append(candidate)
+        if cut_out not in {"internal"} and cut_out not in cut_sides:
+            cut_sides.append(cut_out)
+    if not cut_points:
+        boundary_points, boundary_sides = _collect_boundary_points_in_bounds(pts, bounds=bounds, tol_px=1.5)
+        cut_points = [[float(point[0]), float(point[1])] for point in boundary_points]
+        cut_sides = list(boundary_sides)
+    return {
+        "CutIn": str(cut_in),
+        "CutOut": str(cut_out),
+        "CutSides": cut_sides,
+        "CutPoints": cut_points,
+    }
+
+
+def _polygon_cut_metadata_for_resize_ctx(rings_uv: Sequence[np.ndarray], feature: Dict, resize_ctx: ResizeContext) -> Dict:
+    bounds = _resize_ctx_content_bounds(resize_ctx)
+    cut_points: List[np.ndarray] = []
+    cut_sides: List[str] = []
+    for ring in rings_uv:
+        ring_np = np.asarray(ring, dtype=np.float32)
+        if ring_np.ndim != 2 or ring_np.shape[0] == 0:
+            continue
+        ring_points, ring_sides = _collect_boundary_points_in_bounds(ring_np, bounds=bounds, tol_px=1.5)
+        for point in ring_points:
+            if not any(np.allclose(point, existing, atol=1e-3) for existing in cut_points):
+                cut_points.append(np.asarray(point, dtype=np.float32))
+        for side in ring_sides:
+            if side not in cut_sides:
+                cut_sides.append(side)
+    return {
+        "CutSides": list(cut_sides),
+        "CutPoints": [[float(point[0]), float(point[1])] for point in cut_points],
+    }
+
+
+def _append_cut_metadata_to_props(
+    props: Dict,
+    task_schema: TaskSchema,
+    feature: Dict,
+    resize_ctx: ResizeContext,
+    points_uv: np.ndarray,
+    rings_uv: Sequence[np.ndarray] | None,
+) -> Dict:
+    out = dict(props)
+    if task_schema.geometry_type == "linestring":
+        cut_props = _line_cut_metadata_for_resize_ctx(points_uv=points_uv, feature=feature, resize_ctx=resize_ctx)
+        if cut_props["CutIn"] != "none":
+            out["CutIn"] = cut_props["CutIn"]
+        if cut_props["CutOut"] != "none":
+            out["CutOut"] = cut_props["CutOut"]
+        if cut_props["CutSides"]:
+            out["CutSides"] = list(cut_props["CutSides"])
+        if cut_props["CutPoints"]:
+            out["CutPoints"] = [[float(pt[0]), float(pt[1]), 0.0] for pt in cut_props["CutPoints"]]
+        return out
+    cut_props = _polygon_cut_metadata_for_resize_ctx(
+        rings_uv=list(rings_uv or []),
+        feature=feature,
+        resize_ctx=resize_ctx,
+    )
+    if cut_props["CutSides"]:
+        out["CutSides"] = list(cut_props["CutSides"])
+    if cut_props["CutPoints"]:
+        out["CutPoints"] = [[float(pt[0]), float(pt[1]), 0.0] for pt in cut_props["CutPoints"]]
+    return out
+
+
 def pixel_features_to_geojson(
     task_schema: TaskSchema,
     feature_records: Sequence[Dict],
@@ -434,6 +570,14 @@ def pixel_features_to_uv_geojson(
                     rings_uv = [points_uv]
                 if not rings_uv:
                     continue
+                props = _append_cut_metadata_to_props(
+                    props=props,
+                    task_schema=task_schema,
+                    feature=feature,
+                    resize_ctx=resize_ctx,
+                    points_uv=points_uv,
+                    rings_uv=rings_uv,
+                )
                 polygon_coords = []
                 for ring_uv in rings_uv:
                     coords = []
@@ -447,6 +591,14 @@ def pixel_features_to_uv_geojson(
             else:
                 if points_uv.shape[0] < task_schema.min_points_per_feature:
                     continue
+                props = _append_cut_metadata_to_props(
+                    props=props,
+                    task_schema=task_schema,
+                    feature=feature,
+                    resize_ctx=resize_ctx,
+                    points_uv=points_uv,
+                    rings_uv=None,
+                )
                 coords = []
                 for u, v in points_uv:
                     coords.append([float(u), float(v), 0.0] if include_z else [float(u), float(v)])
@@ -507,6 +659,23 @@ def uv_geojson_to_pixel_features(
                     "properties": dict(feature.get("properties", {})),
                     "points": points_abs.astype(np.float32),
                 }
+            cut_sides = feature.get("properties", {}).get("CutSides")
+            cut_points = feature.get("properties", {}).get("CutPoints")
+            if isinstance(cut_sides, list):
+                record["cut_sides"] = [str(side) for side in cut_sides]
+            if isinstance(cut_points, list):
+                cut_points_uv = np.asarray(
+                    [[float(pt[0]), float(pt[1])] for pt in cut_points if isinstance(pt, (list, tuple)) and len(pt) >= 2],
+                    dtype=np.float32,
+                )
+                if cut_points_uv.ndim == 2 and cut_points_uv.shape[0] > 0:
+                    record["cut_points"] = points_uv_to_abs(points_uv=cut_points_uv, resize_ctx=resize_ctx).astype(np.float32)
+            cut_in = feature.get("properties", {}).get("CutIn")
+            cut_out = feature.get("properties", {}).get("CutOut")
+            if cut_in is not None:
+                record["cut_in"] = str(cut_in)
+            if cut_out is not None:
+                record["cut_out"] = str(cut_out)
             features.append(record)
         return features
     except Exception as exc:
