@@ -208,11 +208,19 @@ def _init_distributed_training(prefer_cuda: bool = True) -> dict:
     rank = int(os.environ.get("RANK", "0"))
     local_rank = int(os.environ.get("LOCAL_RANK", "0"))
     enabled = bool(world_size > 1)
+    cuda_available = bool(torch.cuda.is_available())
     if enabled and not dist.is_initialized():
-        backend = "nccl" if torch.cuda.is_available() else "gloo"
+        backend = "nccl" if cuda_available else "gloo"
         dist.init_process_group(backend=backend)
     if enabled:
-        if torch.cuda.is_available():
+        if prefer_cuda and not cuda_available:
+            raise RuntimeError(
+                "Distributed training requested, but torch.cuda.is_available() is False. "
+                "The current process group would run on CPU and appear to hang. "
+                "Check that the selected Python environment has CUDA-enabled PyTorch and "
+                "that NVIDIA driver/CUDA visibility are working for torchrun."
+            )
+        if cuda_available:
             torch.cuda.set_device(local_rank)
             device = torch.device(f"cuda:{local_rank}")
         else:
@@ -334,7 +342,7 @@ def _build_rank_subset_loader(
             drop_last=False,
         )
         if target_num_batches is not None:
-            batch_lists = _pad_batches_to_length(batch_lists=batch_lists, target_len=int(target_num_batches))
+            batch_lists = _pad_batches_to_length(batches=batch_lists, target_len=int(target_num_batches))
         return DataLoader(
             subset,
             batch_sampler=PrecomputedBatchSampler(batch_lists),
