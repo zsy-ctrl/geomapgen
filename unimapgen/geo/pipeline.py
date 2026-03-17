@@ -125,8 +125,11 @@ def build_geo_dataset(
         feature_mask_min_inside_ratio=float(data_cfg.get("feature_mask_min_inside_ratio", 0.5)),
         state_enabled=bool(state_cfg.get("enabled", True)),
         state_border_margin_px=int(state_cfg.get("border_margin_px", 96)),
+        state_boundary_tol_px=float(state_cfg.get("border_tol_px", 4.0)),
         state_max_features=int(state_cfg.get("max_features", 32)),
-        state_anchor_max_points=int(state_cfg.get("anchor_max_points", 6)),
+        state_anchor_max_points=int(state_cfg.get("anchor_max_points", 3)),
+        state_prefix_mode=str(state_cfg.get("prefix_mode", "cut_points")),
+        state_trace_num_points=int(state_cfg.get("trace_num_points", 3)),
         prompt_with_state=str(
             prompt_cfg.get(
                 "with_state_suffix",

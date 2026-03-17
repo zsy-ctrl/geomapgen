@@ -38,7 +38,7 @@ data:
 
 serialization:
   sample_interval_meter: ${UNIMAPGEN_SAMPLE_INTERVAL_METER:-6.0}
-  coord_bins: ${UNIMAPGEN_COORD_BINS:-1024}
+  coord_bins: ${UNIMAPGEN_COORD_BINS:-256}
   tasks:
     lane:
       collection_name: Lane
@@ -46,9 +46,9 @@ serialization:
       max_features: ${UNIMAPGEN_LANE_MAX_FEATURES:-0}
       min_points_per_feature: 2
       prompt_template: >
-        Output patch-local lane text for the current patch.
-        Learn lane field names, values, and multi-feature formatting from supervision. The final GeoJSON object must be a valid Lane FeatureCollection.
-        The features array may contain zero, one, or many lane Features. Do not assume a fixed lane count.
+        Output patch-local Lane token sequence for the current patch.
+        Learn stable lane properties and geometry from supervision in discrete token form.
+        The patch may contain zero, one, or many lane objects. Do not assume a fixed object count.
         Lane endpoints that meet an intersection must terminate exactly on the visible intersection boundary, with no overshoot and no gap.
         Do not explain anything. Do not use markdown.
     intersection:
@@ -57,10 +57,10 @@ serialization:
       max_features: ${UNIMAPGEN_INTERSECTION_MAX_FEATURES:-0}
       min_points_per_feature: 3
       prompt_template: >
-        Output patch-local intersection text for the current patch.
-        Learn intersection field names, values, and multi-feature formatting from supervision. The final GeoJSON object must be a valid Intersection FeatureCollection.
-        The features array may contain zero, one, or many intersection Features. Do not assume a fixed intersection count.
-        Polygon coordinates must be valid GeoJSON rings and each ring must be closed, with identical first and last coordinates.
+        Output patch-local Intersection token sequence for the current patch.
+        Learn stable intersection properties and geometry from supervision in discrete token form.
+        The patch may contain zero, one, or many intersection objects. Do not assume a fixed object count.
+        Polygon coordinates must form valid closed rings in token sequence order.
         Intersection boundaries must exactly meet connected lane endpoints visible in the patch, with no overshoot and no gap.
         Do not explain anything. Do not use markdown.
 
@@ -68,9 +68,9 @@ prompt:
   include_geospatial_context: ${UNIMAPGEN_PROMPT_INCLUDE_GEOSPATIAL_CONTEXT:-true}
   geospatial_precision: ${UNIMAPGEN_PROMPT_GEOSPATIAL_PRECISION:-3}
   with_state_suffix: >
-    Previous cut-point state anchors are provided below as plain-text StateAnchor lines and StateGeoJSON. Continue only the local increment needed for this patch.
+    Previous cut traces are provided below. Continue incoming cut traces when needed and predict the current patch in the same discrete line-token format.
   without_state_suffix: >
-    No previous cut-point state anchors are available for this patch.
+    No previous cut traces are available for this patch.
 
 text:
   prompt_max_tokens: ${UNIMAPGEN_PROMPT_MAX_TOKENS:-192}
@@ -79,9 +79,12 @@ text:
 
 state_update:
   enabled: true
-  border_margin_px: ${UNIMAPGEN_STATE_BORDER_MARGIN_PX:-128}
+  border_margin_px: ${UNIMAPGEN_STATE_BORDER_MARGIN_PX:-96}
+  border_tol_px: ${UNIMAPGEN_STATE_BORDER_TOL_PX:-4.0}
   max_features: ${UNIMAPGEN_STATE_MAX_FEATURES:-32}
-  anchor_max_points: ${UNIMAPGEN_STATE_ANCHOR_MAX_POINTS:-6}
+  anchor_max_points: ${UNIMAPGEN_STATE_ANCHOR_MAX_POINTS:-3}
+  prefix_mode: ${UNIMAPGEN_STATE_PREFIX_MODE:-cut_points}
+  trace_num_points: ${UNIMAPGEN_STATE_TRACE_NUM_POINTS:-3}
 
 model:
   dino_model_path: ${DINOV2_BACKBONE_PATH:-ckpts/dinov2}
@@ -126,12 +129,12 @@ train:
   weight_decay: 0.01
   warmup_steps: 32
   grad_clip_norm: 1.0
-  amp: false
+  amp: true
   save_latest: true
 
 decode:
-  max_new_tokens: ${UNIMAPGEN_MAX_NEW_TOKENS:-0}
-  min_new_tokens: ${UNIMAPGEN_MIN_NEW_TOKENS:-0}
+  max_new_tokens: ${UNIMAPGEN_MAX_NEW_TOKENS:-512}
+  min_new_tokens: ${UNIMAPGEN_MIN_NEW_TOKENS:-16}
   max_prop_tokens: ${UNIMAPGEN_MAX_PROP_TOKENS:-0}
   temperature: ${UNIMAPGEN_TEMPERATURE:-1.0}
   top_k: ${UNIMAPGEN_TOP_K:-1}

@@ -11,11 +11,10 @@ from PIL import Image
 
 from unimapgen.utils import ensure_dir
 
+from .coord_sequence import uv_items_to_abs_feature_records
 from .geometry import ResizeContext, build_resize_context
 from .io import (
     RasterMeta,
-    coerce_feature_collection,
-    extract_first_json_object,
     geojson_dumps,
     geojson_to_pixel_features,
     pixel_features_to_geojson,
@@ -23,7 +22,6 @@ from .io import (
     read_raster_meta,
     read_rgb_geotiff,
     save_text,
-    uv_geojson_to_pixel_features,
 )
 
 
@@ -319,27 +317,29 @@ def export_batch_geojson_snapshots(
                             temperature=float(decode_cfg.get("temperature", 1.0)),
                             top_k=int(decode_cfg.get("top_k", 1)),
                             repetition_penalty=float(decode_cfg.get("repetition_penalty", 1.0)),
-                            grammar_helper=None,
+                            grammar_helper=text_tokenizer.build_map_grammar_helper(task_schema=task_schema),
                             use_kv_cache=_as_bool(decode_cfg.get("use_kv_cache", True), default=True),
                             return_token_meta=False,
                         )
                 pred_token_ids = pred_ids[0].detach().cpu().tolist()
-                pred_text = text_tokenizer.decode_text(pred_token_ids)
-                pred_geojson = coerce_feature_collection(
+                pred_text = text_tokenizer.render_token_sequence(pred_token_ids)
+                pred_items, decode_info = text_tokenizer.decode_map_items(
+                    token_ids=pred_token_ids,
                     task_schema=task_schema,
-                    obj=extract_first_json_object(pred_text),
+                    image_size=int(cfg["data"]["image_size"]),
                 )
-                pred_features_abs = (
-                    uv_geojson_to_pixel_features(
-                        geojson_dict=pred_geojson,
-                        task_schema=task_schema,
-                        resize_ctx=resize_ctx,
-                    )
-                    if pred_geojson is not None
-                    else []
+                pred_features_abs = uv_items_to_abs_feature_records(
+                    items=pred_items,
+                    task_schema=task_schema,
+                    resize_ctx=resize_ctx,
+                )
+                pred_geojson = pixel_features_to_uv_geojson(
+                    task_schema=task_schema,
+                    feature_records=pred_features_abs,
+                    resize_ctx=resize_ctx,
                 )
                 save_text(os.path.join(sample_out_dir, f"{task_schema.collection_name}.pred.raw.txt"), pred_text)
-                if pred_geojson is not None:
+                if int(decode_info.get("valid_objects", 0)) > 0:
                     save_text(
                         os.path.join(sample_out_dir, f"{task_schema.collection_name}.pred.uv.geojson"),
                         geojson_dumps(pred_geojson),
@@ -367,24 +367,26 @@ def export_batch_geojson_snapshots(
                             "parsed_geojson": False,
                             "pred_feature_count": int(len(pred_features_abs)),
                             "pred_text": pred_text,
+                            "decode_info": decode_info,
                         },
                     )
                 save_json(
                     os.path.join(sample_out_dir, "prediction_debug.json"),
                     {
                         "decode_info": {
-                            "parsed_geojson": bool(pred_geojson is not None),
+                            "parsed_geojson": bool(int(decode_info.get("valid_objects", 0)) > 0),
                             "pred_feature_count": int(len(pred_features_abs)),
                             "empty_feature_collection": bool(
-                                isinstance(pred_geojson, dict) and len(pred_geojson.get("features", []) or []) == 0
+                                int(decode_info.get("valid_objects", 0)) == 0
                             ),
                         },
                         "token_ids": [int(x) for x in pred_token_ids],
                         "pred_text": pred_text,
+                        "pred_items": pred_items,
                         "pred_item_count": int(len(pred_features_abs)),
                     },
                 )
-                if isinstance(pred_geojson, dict) and len(pred_geojson.get("features", []) or []) == 0:
+                if int(decode_info.get("valid_objects", 0)) == 0:
                     save_json(
                         os.path.join(sample_out_dir, f"{task_schema.collection_name}.pred.empty.json"),
                         {

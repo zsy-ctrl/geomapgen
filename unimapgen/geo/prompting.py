@@ -9,19 +9,15 @@ from .schema import TaskSchema
 
 
 _LANE_EXAMPLE = (
-    'Example Lane.uv.geojson: '
-    '{"type":"FeatureCollection","name":"Lane",'
-    '"features":[{"type":"Feature","properties":{"LaneType":14},"geometry":{"type":"LineString","coordinates":[[20,40,0],[180,40,0]]}},'
-    '{"type":"Feature","properties":{"LaneType":9},"geometry":{"type":"LineString","coordinates":[[36,84,0],[172,156,0]]}},'
-    '{"type":"Feature","properties":{"LaneType":7},"geometry":{"type":"LineString","coordinates":[[60,24,0],[170,32,0],[220,92,0]]}}]}.'
+    "Example Lane token sequence: "
+    "<obj> <line> <s_cut> <e_end> <pt> <x_20> <y_40> <pt> <x_180> <y_40> "
+    "<prop> {\"LaneType\":14} <prop_end> <obj_end>."
 )
 
 _INTERSECTION_EXAMPLE = (
-    'Example Intersection.uv.geojson: '
-    '{"type":"FeatureCollection","name":"Intersection",'
-    '"features":[{"type":"Feature","properties":{"IntersectionType":1},"geometry":{"type":"Polygon","coordinates":[[[24,24,0],[88,24,0],[88,88,0],[24,88,0],[24,24,0]]]}},'
-    '{"type":"Feature","properties":{"IntersectionType":1},"geometry":{"type":"Polygon","coordinates":[[[144,80,0],[208,80,0],[208,144,0],[144,144,0],[144,80,0]]]}},'
-    '{"type":"Feature","properties":{"IntersectionType":2},"geometry":{"type":"Polygon","coordinates":[[[168,168,0],[224,168,0],[232,220,0],[176,232,0],[168,168,0]]]}}]}.'
+    "Example Intersection token sequence: "
+    "<obj> <poly> <s_cut> <e_cut> <pt> <x_24> <y_24> <pt> <x_88> <y_24> "
+    "<pt> <x_88> <y_88> <pt> <x_24> <y_88> <prop> {\"IntersectionType\":1} <prop_end> <obj_end>."
 )
 
 
@@ -137,9 +133,10 @@ def build_task_prompt_text(
     if companion_text:
         parts.append(companion_text)
     parts.append(
-        "Output only the final GeoJSON FeatureCollection text. "
-        "Do not output commentary or markdown. "
-        "Do not generate CRS, Id, or RoadId fields; they are assigned after decoding."
+        "Output only the structured map token sequence for this patch. "
+        "Each object must use endpoint types <s_start>/<s_cut> and <e_end>/<e_cut>, followed by discrete <pt> <x_i> <y_i> coordinate pairs. "
+        "After geometry points, emit <prop> compact JSON properties <prop_end>, then close the object with <obj_end>. "
+        "Do not output commentary or markdown. Do not generate CRS, Id, or RoadId fields."
     )
     suffix = str(with_state_suffix if has_state else without_state_suffix).strip()
     if suffix:
@@ -155,16 +152,17 @@ def build_state_text(
 ) -> str:
     items = list(state_items or [])
     lines = [
-        f"StateAnchorMeta task={task_schema.collection_name} anchor_count={len(items)}."
+        f"StateTraceMeta task={task_schema.collection_name} trace_count={len(items)}."
     ]
     if not items:
-        lines.append("StateAnchor none.")
+        lines.append("StateTrace none.")
     else:
         for idx, item in enumerate(items):
             points = np.asarray(item.get("points_uv", []), dtype=np.float32)
             lines.append(
-                f"StateAnchor idx={idx:03d} side={str(item.get('side', 'none'))} "
-                f"geometry={task_schema.geometry_type} points={int(points.shape[0])}."
+                f"StateTrace idx={idx:03d} start_type={str(item.get('start_type', 'start'))} "
+                f"end_type={str(item.get('end_type', 'end'))} geometry={task_schema.geometry_type} "
+                f"points={int(points.shape[0])}."
             )
     lines.append("StateGeoJSON:")
     lines.append(str(geojson_text or "").strip())
@@ -190,12 +188,14 @@ def build_target_text(
         rings = item.get("rings_uv") or []
         if task_schema.geometry_type == "polygon":
             cut_lines.append(
-                f"CutFeature idx={idx:03d} source={source} cut_in={cut_in} cut_out={cut_out} "
+                f"CutFeature idx={idx:03d} source={source} start_type={str(item.get('start_type', 'start'))} "
+                f"end_type={str(item.get('end_type', 'end'))} cut_in={cut_in} cut_out={cut_out} "
                 f"rings={len(rings)} outer_points={int(points.shape[0])}."
             )
         else:
             cut_lines.append(
-                f"CutFeature idx={idx:03d} source={source} cut_in={cut_in} cut_out={cut_out} "
+                f"CutFeature idx={idx:03d} source={source} start_type={str(item.get('start_type', 'start'))} "
+                f"end_type={str(item.get('end_type', 'end'))} cut_in={cut_in} cut_out={cut_out} "
                 f"points={int(points.shape[0])}."
             )
     lines = [

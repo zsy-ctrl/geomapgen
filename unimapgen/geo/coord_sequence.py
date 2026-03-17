@@ -38,6 +38,12 @@ def compact_props_json(props: Dict) -> str:
     return json.dumps(dict(props or {}), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
+def point_origin_sort_key(point_xy: Sequence[float]) -> Tuple[float, float, float]:
+    x = float(point_xy[0])
+    y = float(point_xy[1])
+    return (x * x + y * y, y, x)
+
+
 def feature_record_sort_key(feature: Dict, geometry_type: str) -> Tuple:
     geom = str(geometry_type or "").strip().lower()
     if geom == "polygon" and feature.get("rings"):
@@ -309,6 +315,28 @@ def _canonicalize_line(points_uv: np.ndarray, image_size: int, tol_px: float) ->
     return points_uv.copy()
 
 
+def canonicalize_line_direction_with_endpoint_types(
+    points_uv: np.ndarray,
+    start_type: str,
+    end_type: str,
+) -> Tuple[np.ndarray, str, str]:
+    pts = np.asarray(points_uv, dtype=np.float32)
+    if pts.ndim != 2 or pts.shape[0] <= 1:
+        return pts.astype(np.float32), str(start_type), str(end_type)
+    start_is_cut = str(start_type) == "cut"
+    end_is_cut = str(end_type) == "cut"
+    reverse = False
+    if start_is_cut and not end_is_cut:
+        reverse = False
+    elif end_is_cut and not start_is_cut:
+        reverse = True
+    elif point_origin_sort_key(pts[-1]) < point_origin_sort_key(pts[0]):
+        reverse = True
+    if not reverse:
+        return pts.astype(np.float32), str(start_type), str(end_type)
+    return pts[::-1].copy().astype(np.float32), str(end_type), str(start_type)
+
+
 def _canonicalize_line_lex(points_uv: np.ndarray) -> np.ndarray:
     pts = np.asarray(points_uv, dtype=np.float32)
     if pts.shape[0] <= 1:
@@ -394,12 +422,22 @@ def uv_feature_records_to_target_items(
             )
         cut_in = str(cut_meta.get("cut_in", "none"))
         cut_out = str(cut_meta.get("cut_out", "none"))
+        start_type = "cut" if cut_in != "none" else "start"
+        end_type = "cut" if cut_out != "none" else "end"
+        if task_schema.geometry_type == "linestring":
+            points_uv, start_type, end_type = canonicalize_line_direction_with_endpoint_types(
+                points_uv=points_uv,
+                start_type=start_type,
+                end_type=end_type,
+            )
         out.append(
             {
                 "geometry_type": task_schema.geometry_type,
                 "props_json": compact_props_json(feature.get("properties", {})),
                 "points_uv": points_uv.astype(np.float32),
                 "rings_uv": [ring.astype(np.float32) for ring in rings_uv] if rings_uv else None,
+                "start_type": str(start_type),
+                "end_type": str(end_type),
                 "cut_in": str(cut_in),
                 "cut_out": str(cut_out),
                 "cut_points_uv": np.asarray(cut_meta.get("cut_points_uv", []), dtype=np.float32),
@@ -416,9 +454,13 @@ def uv_feature_records_to_state_items(
     task_schema: TaskSchema,
     image_size: int,
     anchor_max_points: int,
+    prefix_mode: str = "cut_points",
+    trace_num_points: int = 3,
     boundary_tol_px: float = 1.5,
 ) -> List[Dict]:
     out: List[Dict] = []
+    prefix_mode = str(prefix_mode or "cut_points").strip().lower()
+    trace_num_points = max(1, int(trace_num_points))
     for feature in feature_records:
         if task_schema.geometry_type == "polygon" and feature.get("rings"):
             rings_uv = canonicalize_polygon_rings(feature.get("rings", []))
@@ -441,38 +483,118 @@ def uv_feature_records_to_state_items(
             )
             cut_points_uv = np.asarray(cut_meta.get("cut_points_uv", []), dtype=np.float32)
             cut_sides = [str(side) for side in cut_meta.get("cut_sides", [])]
-            if cut_points_uv.ndim == 2 and cut_points_uv.shape[0] > 0:
-                for side in cut_sides:
-                    if side not in {"left", "top"}:
-                        continue
-                    side_points = [
-                        point.astype(np.float32)
-                        for point in cut_points_uv
-                        if boundary_side_for_point_uv(point_xy=point, image_size=image_size, tol_px=boundary_tol_px) == side
-                    ]
-                    if not side_points:
-                        continue
-                    anchors = np.stack(side_points, axis=0).astype(np.float32)
-                    out.append(
-                        {
-                            "geometry_type": task_schema.geometry_type,
-                            "side": side,
-                            "points_uv": sample_anchor_points(points_uv=anchors, max_points=anchor_max_points),
-                        }
-                    )
-                if cut_points_uv.shape[0] > 0:
-                    continue
-        sides = detect_feature_boundary_sides(points_uv=points_uv, image_size=image_size, tol_px=boundary_tol_px)
-        for side in sides:
-            if side not in {"left", "top"}:
+            if not any(side in {"left", "top"} for side in cut_sides):
                 continue
-            out.append(
-                {
-                    "geometry_type": task_schema.geometry_type,
-                    "side": side,
-                    "points_uv": sample_anchor_points(points_uv=points_uv, max_points=anchor_max_points),
-                }
-            )
+            polygon_item = {
+                "geometry_type": task_schema.geometry_type,
+                "points_uv": sample_anchor_points(points_uv=points_uv, max_points=anchor_max_points),
+                "rings_uv": [ring.astype(np.float32) for ring in rings_uv],
+                "start_type": "cut",
+                "end_type": "cut",
+                "cut_sides": list(cut_sides),
+                "cut_points_uv": cut_points_uv.astype(np.float32),
+            }
+            if prefix_mode == "cut_points" and cut_points_uv.ndim == 2 and cut_points_uv.shape[0] > 0:
+                polygon_item["points_uv"] = cut_points_uv[:1].astype(np.float32)
+            elif prefix_mode == "cut_traces" and cut_points_uv.ndim == 2 and cut_points_uv.shape[0] > 0:
+                polygon_item["points_uv"] = cut_points_uv[: min(trace_num_points, cut_points_uv.shape[0])].astype(np.float32)
+            out.append(polygon_item)
+            continue
+        cut_meta = line_cut_metadata_from_uv(
+            points_uv=points_uv,
+            image_size=image_size,
+            cut_start=bool(feature.get("cut_start", False)),
+            cut_end=bool(feature.get("cut_end", False)),
+            tol_px=boundary_tol_px,
+        )
+        cut_in = str(cut_meta.get("cut_in", "none"))
+        cut_out = str(cut_meta.get("cut_out", "none"))
+        start_type = "cut" if cut_in != "none" else "start"
+        end_type = "cut" if cut_out != "none" else "end"
+        points_uv, start_type, end_type = canonicalize_line_direction_with_endpoint_types(
+            points_uv=points_uv,
+            start_type=start_type,
+            end_type=end_type,
+        )
+        has_cut = str(start_type) == "cut" or str(end_type) == "cut"
+        if prefix_mode == "cut_only" and not has_cut:
+            continue
+        if prefix_mode == "cut_points":
+            if not has_cut:
+                continue
+            if str(start_type) == "cut":
+                trace_pts = points_uv[:1].astype(np.float32)
+                out.append(
+                    {
+                        "geometry_type": task_schema.geometry_type,
+                        "points_uv": trace_pts,
+                        "start_type": "cut",
+                        "end_type": "cut",
+                        "cut_in": str(cut_in),
+                        "cut_out": str(cut_out),
+                        "cut_points_uv": np.asarray(cut_meta.get("cut_points_uv", []), dtype=np.float32),
+                        "cut_sides": [str(side) for side in cut_meta.get("cut_sides", [])],
+                    }
+                )
+            if str(end_type) == "cut":
+                trace_pts = points_uv[-1:].astype(np.float32)
+                out.append(
+                    {
+                        "geometry_type": task_schema.geometry_type,
+                        "points_uv": trace_pts,
+                        "start_type": "cut",
+                        "end_type": "cut",
+                        "cut_in": str(cut_in),
+                        "cut_out": str(cut_out),
+                        "cut_points_uv": np.asarray(cut_meta.get("cut_points_uv", []), dtype=np.float32),
+                        "cut_sides": [str(side) for side in cut_meta.get("cut_sides", [])],
+                    }
+                )
+            continue
+        if prefix_mode == "cut_traces":
+            if not has_cut:
+                continue
+            if str(start_type) == "cut":
+                trace_pts = points_uv[: min(trace_num_points, points_uv.shape[0])].astype(np.float32)
+                out.append(
+                    {
+                        "geometry_type": task_schema.geometry_type,
+                        "points_uv": trace_pts,
+                        "start_type": "cut",
+                        "end_type": "cut",
+                        "cut_in": str(cut_in),
+                        "cut_out": str(cut_out),
+                        "cut_points_uv": np.asarray(cut_meta.get("cut_points_uv", []), dtype=np.float32),
+                        "cut_sides": [str(side) for side in cut_meta.get("cut_sides", [])],
+                    }
+                )
+            if str(end_type) == "cut":
+                trace_pts = points_uv[max(0, points_uv.shape[0] - trace_num_points) :].astype(np.float32)[::-1].copy()
+                out.append(
+                    {
+                        "geometry_type": task_schema.geometry_type,
+                        "points_uv": trace_pts,
+                        "start_type": "cut",
+                        "end_type": "cut",
+                        "cut_in": str(cut_in),
+                        "cut_out": str(cut_out),
+                        "cut_points_uv": np.asarray(cut_meta.get("cut_points_uv", []), dtype=np.float32),
+                        "cut_sides": [str(side) for side in cut_meta.get("cut_sides", [])],
+                    }
+                )
+            continue
+        out.append(
+            {
+                "geometry_type": task_schema.geometry_type,
+                "points_uv": sample_anchor_points(points_uv=points_uv, max_points=anchor_max_points),
+                "start_type": str(start_type),
+                "end_type": str(end_type),
+                "cut_in": str(cut_in),
+                "cut_out": str(cut_out),
+                "cut_points_uv": np.asarray(cut_meta.get("cut_points_uv", []), dtype=np.float32),
+                "cut_sides": [str(side) for side in cut_meta.get("cut_sides", [])],
+            }
+        )
     out.sort(key=lambda item: _state_item_sort_key(item=item))
     return out
 
@@ -502,6 +624,8 @@ def uv_items_to_abs_feature_records(
                 "properties": props,
                 "points": points_abs.astype(np.float32),
                 "rings": [ring.astype(np.float32) for ring in rings_abs] if rings_abs else None,
+                "start_type": str(item.get("start_type", "start")),
+                "end_type": str(item.get("end_type", "end")),
                 "cut_in": str(item.get("cut_in", "none")),
                 "cut_out": str(item.get("cut_out", "none")),
                 "cut_sides": [str(side) for side in item.get("cut_sides", [])],
@@ -541,10 +665,10 @@ def _item_sort_key(item: Dict, geometry_type: str) -> Tuple:
 def _state_item_sort_key(item: Dict) -> Tuple:
     points = _canonicalize_line_lex(np.asarray(item.get("points_uv", []), dtype=np.float32))
     if points.ndim != 2 or points.shape[0] == 0:
-        return (_SIDE_ORDER.get(str(item.get("side", "none")), 99), 10**9, 10**9, 0)
+        return (1 if str(item.get("start_type", "start")) == "cut" else 2, 10**9, 10**9, 0)
     first = points[0]
     return (
-        _SIDE_ORDER.get(str(item.get("side", "none")), 99),
+        0 if str(item.get("start_type", "start")) == "cut" else (1 if str(item.get("end_type", "end")) == "cut" else 2),
         float(first[1]),
         float(first[0]),
         int(points.shape[0]),

@@ -49,10 +49,10 @@ class GeoMapGrammarHelper:
         ids = [int(x) for x in generated_qwen_ids]
         tok = self.tokenizer
         geom_token_id = int(tok.line_token_id if self.task_schema.geometry_type == "linestring" else tok.poly_token_id)
-        src_ids = [int(v) for v in tok.src_token_ids.values()]
-        cut_in_ids = [int(v) for v in tok.cut_in_token_ids.values()]
-        cut_out_ids = [int(v) for v in tok.cut_out_token_ids.values()]
-        coord_ids = [int(x) for x in tok.coord_token_ids]
+        start_type_ids = [int(v) for v in tok.start_type_token_ids.values()]
+        end_type_ids = [int(v) for v in tok.end_type_token_ids.values()]
+        x_ids = [int(x) for x in tok.x_token_ids]
+        y_ids = [int(x) for x in tok.y_token_ids]
         base_text_ids = [int(x) for x in range(int(tok.base_vocab_size))]
         min_points = max(int(self.task_schema.min_points_per_feature), int(min_points_per_line))
         max_objects = None if max_lines is None else max(1, int(max_lines))
@@ -80,36 +80,31 @@ class GeoMapGrammarHelper:
                 else:
                     return [geom_token_id]
             elif state == "after_geometry":
-                if token_id in src_ids:
-                    state = "after_src"
+                if token_id in start_type_ids:
+                    state = "after_start_type"
                 else:
-                    return src_ids
-            elif state == "after_src":
-                if token_id in cut_in_ids:
-                    state = "after_cut_in"
+                    return start_type_ids
+            elif state == "after_start_type":
+                if token_id in end_type_ids:
+                    state = "after_end_type"
                 else:
-                    return cut_in_ids
-            elif state == "after_cut_in":
-                if token_id in cut_out_ids:
-                    state = "after_cut_out"
-                else:
-                    return cut_out_ids
-            elif state == "after_cut_out":
+                    return end_type_ids
+            elif state == "after_end_type":
                 if token_id == int(tok.pt_token_id):
                     state = "after_pt_token"
                 else:
                     return [int(tok.pt_token_id)]
             elif state == "after_pt_token":
-                if token_id in coord_ids:
+                if token_id in x_ids:
                     state = "after_pt_x"
                 else:
-                    return coord_ids
+                    return x_ids
             elif state == "after_pt_x":
-                if token_id in coord_ids:
+                if token_id in y_ids:
                     ring_point_count += 1
                     state = "after_point"
                 else:
-                    return coord_ids
+                    return y_ids
             elif state == "after_point":
                 allowed = [int(tok.pt_token_id)]
                 if ring_point_count >= int(min_points):
@@ -152,19 +147,17 @@ class GeoMapGrammarHelper:
         if state == "after_obj":
             return [geom_token_id]
         if state == "after_geometry":
-            return src_ids
-        if state == "after_src":
-            return cut_in_ids
-        if state == "after_cut_in":
-            return cut_out_ids
-        if state == "after_cut_out":
+            return start_type_ids
+        if state == "after_start_type":
+            return end_type_ids
+        if state == "after_end_type":
             return [int(tok.pt_token_id)]
         if state == "in_prop":
             return self._prop_allowed(base_text_ids=base_text_ids, prop_token_count=prop_token_count)
         if state == "after_pt_token":
-            return coord_ids
+            return x_ids
         if state == "after_pt_x":
-            return coord_ids
+            return y_ids
         if state == "after_point":
             allowed = [int(tok.pt_token_id)]
             if ring_point_count >= int(min_points):
@@ -196,14 +189,16 @@ class GeoCoordTokenizer:
         "<state_bos>",
         "<obj>",
         "<obj_end>",
-        "<anchor>",
-        "<anchor_end>",
         "<line>",
         "<poly>",
         "<prop>",
         "<prop_end>",
         "<pt>",
         "<ring>",
+        "<s_start>",
+        "<s_cut>",
+        "<e_end>",
+        "<e_cut>",
         "<src_local>",
         "<src_state>",
         "<cut_in_none>",
@@ -251,8 +246,10 @@ class GeoCoordTokenizer:
                 self.tokenizer.add_special_tokens({"pad_token": "<|pad|>"})
         self.base_vocab_size = int(len(self.tokenizer))
         self.coord_bins = max(16, int(coord_bins))
-        coord_tokens = [f"<coord_{idx:04d}>" for idx in range(self.coord_bins)]
-        added_tokens = self._BASE_SPECIAL_TOKENS + coord_tokens
+        x_tokens = [f"<x_{idx}>" for idx in range(self.coord_bins)]
+        y_tokens = [f"<y_{idx}>" for idx in range(self.coord_bins)]
+        legacy_coord_tokens = [f"<coord_{idx:04d}>" for idx in range(self.coord_bins)]
+        added_tokens = self._BASE_SPECIAL_TOKENS + x_tokens + y_tokens + legacy_coord_tokens
         self.tokenizer.add_special_tokens({"additional_special_tokens": added_tokens})
 
         self.pad_token_id = int(self.tokenizer.pad_token_id)
@@ -261,11 +258,17 @@ class GeoCoordTokenizer:
             token: int(self.tokenizer.convert_tokens_to_ids(token))
             for token in added_tokens
         }
-        self.coord_token_ids = [self.special_token_ids[f"<coord_{idx:04d}>"] for idx in range(self.coord_bins)]
-        self.coord_id_to_bin = {tok_id: idx for idx, tok_id in enumerate(self.coord_token_ids)}
-        self.coord_bin_to_id = {idx: tok_id for idx, tok_id in enumerate(self.coord_token_ids)}
+        self.x_token_ids = [self.special_token_ids[f"<x_{idx}>"] for idx in range(self.coord_bins)]
+        self.y_token_ids = [self.special_token_ids[f"<y_{idx}>"] for idx in range(self.coord_bins)]
+        self.x_id_to_bin = {tok_id: idx for idx, tok_id in enumerate(self.x_token_ids)}
+        self.y_id_to_bin = {tok_id: idx for idx, tok_id in enumerate(self.y_token_ids)}
+        self.x_bin_to_id = {idx: tok_id for idx, tok_id in enumerate(self.x_token_ids)}
+        self.y_bin_to_id = {idx: tok_id for idx, tok_id in enumerate(self.y_token_ids)}
+        self.coord_token_ids = list(self.x_token_ids) + list(self.y_token_ids)
         self.control_token_ids = {
-            name: tok_id for name, tok_id in self.special_token_ids.items() if not name.startswith("<coord_")
+            name: tok_id
+            for name, tok_id in self.special_token_ids.items()
+            if not name.startswith("<coord_") and not name.startswith("<x_") and not name.startswith("<y_")
         }
 
         vocab_size = int(len(self.tokenizer))
@@ -278,14 +281,20 @@ class GeoCoordTokenizer:
         self.state_bos_token_id = int(self.control_token_ids["<state_bos>"])
         self.obj_token_id = int(self.control_token_ids["<obj>"])
         self.obj_end_token_id = int(self.control_token_ids["<obj_end>"])
-        self.anchor_token_id = int(self.control_token_ids["<anchor>"])
-        self.anchor_end_token_id = int(self.control_token_ids["<anchor_end>"])
         self.line_token_id = int(self.control_token_ids["<line>"])
         self.poly_token_id = int(self.control_token_ids["<poly>"])
         self.prop_token_id = int(self.control_token_ids["<prop>"])
         self.prop_end_token_id = int(self.control_token_ids["<prop_end>"])
         self.pt_token_id = int(self.control_token_ids["<pt>"])
         self.ring_token_id = int(self.control_token_ids["<ring>"])
+        self.start_type_token_ids = {
+            "start": int(self.control_token_ids["<s_start>"]),
+            "cut": int(self.control_token_ids["<s_cut>"]),
+        }
+        self.end_type_token_ids = {
+            "end": int(self.control_token_ids["<e_end>"]),
+            "cut": int(self.control_token_ids["<e_cut>"]),
+        }
         self.src_token_ids = {
             "local": int(self.control_token_ids["<src_local>"]),
             "state": int(self.control_token_ids["<src_state>"]),
@@ -317,6 +326,8 @@ class GeoCoordTokenizer:
         self.cut_in_id_to_name = {tok_id: name for name, tok_id in self.cut_in_token_ids.items()}
         self.cut_out_id_to_name = {tok_id: name for name, tok_id in self.cut_out_token_ids.items()}
         self.side_id_to_name = {tok_id: name for name, tok_id in self.side_token_ids.items()}
+        self.start_type_id_to_name = {tok_id: name for name, tok_id in self.start_type_token_ids.items()}
+        self.end_type_id_to_name = {tok_id: name for name, tok_id in self.end_type_token_ids.items()}
 
     @property
     def vocab_size(self) -> int:
@@ -341,7 +352,7 @@ class GeoCoordTokenizer:
         return str(self.tokenizer.decode(ids, skip_special_tokens=True))
 
     def build_map_grammar_helper(self, task_schema: TaskSchema, max_prop_tokens: int = 128) -> GeoMapGrammarHelper:
-        return None
+        return GeoMapGrammarHelper(tokenizer=self, task_schema=task_schema, max_prop_tokens=max_prop_tokens)
 
     def encode_state_items(
         self,
@@ -350,14 +361,19 @@ class GeoCoordTokenizer:
         max_length: int | None = None,
         append_eos: bool = True,
     ) -> List[int]:
-        ids: List[int] = [int(self.state_bos_token_id)]
+        ids: List[int] = []
         for item in state_items:
             geometry_type = str(item.get("geometry_type", "linestring")).strip().lower()
-            ids.append(int(self.anchor_token_id))
             ids.append(int(self.line_token_id if geometry_type == "linestring" else self.poly_token_id))
-            ids.append(int(self.side_token_ids.get(str(item.get("side", "none")), self.side_token_ids["none"])))
-            ids.extend(self._encode_points(points_uv=item.get("points_uv", []), image_size=image_size))
-            ids.append(int(self.anchor_end_token_id))
+            ids.append(
+                int(self.start_type_token_ids.get(str(item.get("start_type", "start")), self.start_type_token_ids["start"]))
+            )
+            ids.append(int(self.end_type_token_ids.get(str(item.get("end_type", "end")), self.end_type_token_ids["end"])))
+            if geometry_type == "polygon" and item.get("rings_uv"):
+                ids.extend(self._encode_rings(rings_uv=item.get("rings_uv", []), image_size=image_size))
+            else:
+                ids.extend(self._encode_points(points_uv=item.get("points_uv", []), image_size=image_size))
+        ids.append(int(self.state_bos_token_id))
         return self._finalize_ids(ids=ids, max_length=max_length, append_eos=append_eos)
 
     def encode_map_items(
@@ -372,9 +388,10 @@ class GeoCoordTokenizer:
             geometry_type = str(item.get("geometry_type", "linestring")).strip().lower()
             ids.append(int(self.obj_token_id))
             ids.append(int(self.line_token_id if geometry_type == "linestring" else self.poly_token_id))
-            ids.append(int(self.src_token_ids.get(str(item.get("source", "local")), self.src_token_ids["local"])))
-            ids.append(int(self.cut_in_token_ids.get(str(item.get("cut_in", "none")), self.cut_in_token_ids["none"])))
-            ids.append(int(self.cut_out_token_ids.get(str(item.get("cut_out", "none")), self.cut_out_token_ids["none"])))
+            ids.append(
+                int(self.start_type_token_ids.get(str(item.get("start_type", "start")), self.start_type_token_ids["start"]))
+            )
+            ids.append(int(self.end_type_token_ids.get(str(item.get("end_type", "end")), self.end_type_token_ids["end"])))
             if geometry_type == "polygon" and item.get("rings_uv"):
                 ids.extend(self._encode_rings(rings_uv=item.get("rings_uv", []), image_size=image_size))
             else:
@@ -416,17 +433,13 @@ class GeoCoordTokenizer:
                 geometry_type = str(task_schema.geometry_type)
             i += 1
 
-            source = "local"
-            if i < len(ids) and int(ids[i]) in self.src_id_to_name:
-                source = self.src_id_to_name[int(ids[i])]
+            start_type = "start"
+            if i < len(ids) and int(ids[i]) in self.start_type_id_to_name:
+                start_type = self.start_type_id_to_name[int(ids[i])]
                 i += 1
-            cut_in = "none"
-            if i < len(ids) and int(ids[i]) in self.cut_in_id_to_name:
-                cut_in = self.cut_in_id_to_name[int(ids[i])]
-                i += 1
-            cut_out = "none"
-            if i < len(ids) and int(ids[i]) in self.cut_out_id_to_name:
-                cut_out = self.cut_out_id_to_name[int(ids[i])]
+            end_type = "end"
+            if i < len(ids) and int(ids[i]) in self.end_type_id_to_name:
+                end_type = self.end_type_id_to_name[int(ids[i])]
                 i += 1
 
             body_ids: List[int] = []
@@ -462,11 +475,11 @@ class GeoCoordTokenizer:
                 if int(body_ids[j]) == int(self.pt_token_id) and j + 2 < len(body_ids):
                     x_id = int(body_ids[j + 1])
                     y_id = int(body_ids[j + 2])
-                    if x_id in self.coord_id_to_bin and y_id in self.coord_id_to_bin:
+                    if x_id in self.x_id_to_bin and y_id in self.y_id_to_bin:
                         point_buffer.append(
                             self._dequantize_pair(
-                                x_bin=int(self.coord_id_to_bin[x_id]),
-                                y_bin=int(self.coord_id_to_bin[y_id]),
+                                x_bin=int(self.x_id_to_bin[x_id]),
+                                y_bin=int(self.y_id_to_bin[y_id]),
                                 image_size=image_size,
                             )
                         )
@@ -492,13 +505,22 @@ class GeoCoordTokenizer:
                         "props_parse_ok": bool(props_parse_ok),
                         "points_uv": points_uv_np,
                         "rings_uv": [np.asarray(ring, dtype=np.float32) for ring in rings_uv] if geometry_type == "polygon" and rings_uv else None,
-                        "source": source,
-                        "cut_in": cut_in,
-                        "cut_out": cut_out,
+                        "start_type": start_type,
+                        "end_type": end_type,
                     }
                 )
                 valid_objects += 1
         return items, {"valid_objects": int(valid_objects), "saw_object": bool(saw_object)}
+
+    def render_token_sequence(self, token_ids: Sequence[int]) -> str:
+        ids = [int(x) for x in token_ids if int(x) != self.pad_token_id]
+        toks: List[str] = []
+        for token_id in ids:
+            if 0 <= token_id < len(self.tokenizer):
+                toks.append(str(self.tokenizer.convert_ids_to_tokens(int(token_id))))
+            else:
+                toks.append(f"<unk_{int(token_id)}>")
+        return " ".join(toks).strip()
 
     def strip_padding(self, token_ids: Iterable[int]) -> List[int]:
         return [int(x) for x in token_ids if int(x) != self.pad_token_id]
@@ -514,7 +536,7 @@ class GeoCoordTokenizer:
     def _encode_points(self, points_uv: Sequence[Sequence[float]], image_size: int) -> List[int]:
         out: List[int] = []
         for x_bin, y_bin in self._quantize_points(points_uv=points_uv, image_size=image_size):
-            out.extend([int(self.pt_token_id), int(self.coord_bin_to_id[x_bin]), int(self.coord_bin_to_id[y_bin])])
+            out.extend([int(self.pt_token_id), int(self.x_bin_to_id[x_bin]), int(self.y_bin_to_id[y_bin])])
         return out
 
     def _encode_rings(self, rings_uv: Sequence[Sequence[Sequence[float]]], image_size: int) -> List[int]:

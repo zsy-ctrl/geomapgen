@@ -79,8 +79,11 @@ class GeoVectorDatasetConfig:
     feature_mask_min_inside_ratio: float
     state_enabled: bool
     state_border_margin_px: int
+    state_boundary_tol_px: float
     state_max_features: int
     state_anchor_max_points: int
+    state_prefix_mode: str
+    state_trace_num_points: int
     prompt_with_state: str
     prompt_without_state: str
     prompt_include_geospatial_context: bool
@@ -243,12 +246,16 @@ class GeoVectorDataset(Dataset):
             feature_records=target_features_uv,
             task_schema=item["task_schema"],
             image_size=int(self.cfg.image_size),
+            boundary_tol_px=float(self.cfg.state_boundary_tol_px),
         )
         state_items = uv_feature_records_to_state_items(
             feature_records=state_features_uv,
             task_schema=item["task_schema"],
             image_size=int(self.cfg.image_size),
             anchor_max_points=int(self.cfg.state_anchor_max_points),
+            prefix_mode=str(self.cfg.state_prefix_mode),
+            trace_num_points=int(self.cfg.state_trace_num_points),
+            boundary_tol_px=float(self.cfg.state_boundary_tol_px),
         )
         state_geojson = pixel_features_to_geojson(
             task_schema=item["task_schema"],
@@ -1311,6 +1318,7 @@ class GeoVectorDataset(Dataset):
                 str(int(bool(state_has_left))),
                 str(int(bool(state_has_top))),
                 str(int(self.cfg.state_border_margin_px)),
+                f"{float(self.cfg.state_boundary_tol_px):.3f}",
                 str(int(self.cfg.state_max_features)),
             ]
         )
@@ -1348,16 +1356,18 @@ class GeoVectorCollator:
             for b in batch
         ]
         state_ids = [
-            self.map_tokenizer.encode_text(
-                b.get("state_text", ""),
+            self.map_tokenizer.encode_state_items(
+                b.get("state_items", []),
+                image_size=self.image_size,
                 max_length=self.state_max_tokens,
                 append_eos=True,
             )
             for b in batch
         ]
         target_ids = [
-            self.map_tokenizer.encode_text(
-                b.get("target_text", ""),
+            self.map_tokenizer.encode_map_items(
+                b.get("target_items", []),
+                image_size=self.image_size,
                 max_length=self.target_max_tokens,
                 append_eos=True,
             )

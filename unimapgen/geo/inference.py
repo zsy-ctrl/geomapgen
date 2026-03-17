@@ -8,7 +8,7 @@ import numpy as np
 import torch
 from PIL import Image
 
-from .coord_sequence import uv_feature_records_to_state_items
+from .coord_sequence import uv_feature_records_to_state_items, uv_items_to_abs_feature_records
 from .geometry import (
     audit_tile_window_selection,
     annotate_tile_windows_with_mask,
@@ -29,8 +29,6 @@ from .schema import TaskSchema
 from .io import (
     NON_TRAINING_PROPERTY_KEYS,
     assign_incremental_feature_ids,
-    coerce_feature_collection,
-    extract_first_json_object,
     geojson_dumps_compact,
     geojson_to_pixel_features,
     pixel_features_to_geojson,
@@ -39,7 +37,6 @@ from .io import (
     read_raster_meta,
     read_rgb_geotiff,
     strip_non_training_fields_from_feature_collection,
-    uv_geojson_to_pixel_features,
 )
 
 
@@ -521,9 +518,12 @@ def run_tiled_sample_prediction(
             flush=True,
         )
     state_cfg = cfg.get("state_update", {})
-    border_margin_px = int(state_cfg.get("border_margin_px", 128))
+    border_margin_px = int(state_cfg.get("border_margin_px", 96))
+    border_tol_px = float(state_cfg.get("border_tol_px", 4.0))
     state_max_features = int(state_cfg.get("max_features", 32))
-    state_anchor_max_points = int(state_cfg.get("anchor_max_points", 6))
+    state_anchor_max_points = int(state_cfg.get("anchor_max_points", 3))
+    state_prefix_mode = str(state_cfg.get("prefix_mode", "cut_points"))
+    state_trace_num_points = int(state_cfg.get("trace_num_points", 3))
     sample_interval_meter = cfg.get("serialization", {}).get("sample_interval_meter")
     image_size = int(cfg["data"]["image_size"])
     task_predictions: Dict[str, List[Dict]] = {}
@@ -603,6 +603,9 @@ def run_tiled_sample_prediction(
                 task_schema=task_schema,
                 image_size=image_size,
                 anchor_max_points=state_anchor_max_points,
+                prefix_mode=state_prefix_mode,
+                trace_num_points=state_trace_num_points,
+                boundary_tol_px=border_tol_px,
             )
             has_state = bool(state_items)
             companion_task_name = _paired_task_name(task_name, task_schemas)
@@ -662,8 +665,9 @@ def run_tiled_sample_prediction(
                     )
                 ),
             )
-            state_ids = text_tokenizer.encode_text(
-                text=state_text,
+            state_ids = text_tokenizer.encode_state_items(
+                state_items=state_items,
+                image_size=int(cfg["data"]["image_size"]),
                 max_length=cfg.get("text", {}).get("state_max_tokens"),
                 append_eos=True,
             )
@@ -703,26 +707,28 @@ def run_tiled_sample_prediction(
                     temperature=float(decode_cfg.get("temperature", 1.0)),
                     top_k=int(decode_cfg.get("top_k", 1)),
                     repetition_penalty=float(decode_cfg.get("repetition_penalty", 1.0)),
-                    grammar_helper=None,
+                    grammar_helper=text_tokenizer.build_map_grammar_helper(task_schema=task_schema),
                     use_kv_cache=_as_bool(decode_cfg.get("use_kv_cache", True), default=True),
                     return_token_meta=False,
                 )
             gen_sec = time.time() - gen_t0
             parse_t0 = time.time()
             pred_qwen_ids = pred_qwen_ids[0].detach().cpu().tolist()
-            pred_text = text_tokenizer.decode_text(pred_qwen_ids)
-            pred_geojson = coerce_feature_collection(
+            pred_text = text_tokenizer.render_token_sequence(pred_qwen_ids)
+            pred_items, decode_info = text_tokenizer.decode_map_items(
+                token_ids=pred_qwen_ids,
                 task_schema=task_schema,
-                obj=extract_first_json_object(pred_text),
+                image_size=int(cfg["data"]["image_size"]),
             )
-            pred_features_abs = (
-                uv_geojson_to_pixel_features(
-                    geojson_dict=pred_geojson,
-                    task_schema=task_schema,
-                    resize_ctx=resize_ctx,
-                )
-                if pred_geojson is not None
-                else []
+            pred_features_abs = uv_items_to_abs_feature_records(
+                items=pred_items,
+                task_schema=task_schema,
+                resize_ctx=resize_ctx,
+            )
+            pred_geojson = pixel_features_to_uv_geojson(
+                task_schema=task_schema,
+                feature_records=pred_features_abs,
+                resize_ctx=resize_ctx,
             )
             parse_sec = time.time() - parse_t0
 
@@ -740,7 +746,7 @@ def run_tiled_sample_prediction(
             if text_tokenizer.eos_token_id in stripped_ids:
                 stripped_ids = stripped_ids[: stripped_ids.index(text_tokenizer.eos_token_id)]
             empty_sequence_ok = stripped_ids == []
-            decoded_ok = bool(pred_geojson is not None or empty_sequence_ok)
+            decoded_ok = bool(int(decode_info.get("valid_objects", 0)) > 0 or empty_sequence_ok)
             raw_task_outputs.append(
                 {
                     "tile_index": int(tile_index),
@@ -767,6 +773,8 @@ def run_tiled_sample_prediction(
                     "token_ids": [int(x) for x in pred_qwen_ids],
                     "pred_text": pred_text,
                     "pred_uv_geojson": pred_geojson,
+                    "pred_items": pred_items,
+                    "decode_info": decode_info,
                     "pred_geojson": pixel_features_to_geojson(
                         task_schema=task_schema,
                         feature_records=pred_features_abs,
