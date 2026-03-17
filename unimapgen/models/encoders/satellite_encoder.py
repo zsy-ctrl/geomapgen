@@ -10,13 +10,17 @@ from unimapgen.models.unimapgen_v1 import SimpleBEVEncoder
 
 try:
     from transformers import AutoImageProcessor, AutoModel
-except Exception:
+except Exception:  # pragma: no cover
     AutoImageProcessor = None
     AutoModel = None
 
 
 class SatelliteEncoder(nn.Module):
-
+    """
+    Paper-aligned satellite encoder interface.
+    - Preferred: DINOv2 family from HuggingFace.
+    - Fallback: lightweight CNN token encoder for offline/debug.
+    """
 
     def __init__(
         self,

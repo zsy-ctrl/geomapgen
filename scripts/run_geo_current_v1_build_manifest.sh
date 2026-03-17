@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PYTHON_BIN="${PYTHON_BIN:-python}"
+DATASET_ROOT="${DATASET_ROOT:-/dataset/zsy/dataset-extracted}"
+OUTPUT_ROOT="${OUTPUT_ROOT:-$ROOT/outputs/geo_current_v1}"
+FAMILY_MANIFEST="${FAMILY_MANIFEST:-$OUTPUT_ROOT/family_manifest.jsonl}"
+
+mkdir -p "$OUTPUT_ROOT"
+
+echo "[GeoCurrentV1] build family manifest -> $FAMILY_MANIFEST"
+"$PYTHON_BIN" "$ROOT/scripts/build_geo_current_family_manifest.py" \
+  --dataset-root "$DATASET_ROOT" \
+  --output-jsonl "$FAMILY_MANIFEST" \
+  --tile-size-px "${TILE_SIZE_PX:-1024}" \
+  --overlap-px "${OVERLAP_PX:-256}" \
+  --keep-margin-px "${KEEP_MARGIN_PX:-128}" \
+  --review-crop-pad-px "${REVIEW_CROP_PAD_PX:-64}" \
+  --tile-min-mask-ratio "${TILE_MIN_MASK_RATIO:-0.02}" \
+  --tile-min-mask-pixels "${TILE_MIN_MASK_PIXELS:-256}" \
+  --search-within-review-bbox \
+  --fallback-to-all-if-empty
+

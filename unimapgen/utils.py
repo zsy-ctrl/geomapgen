@@ -7,8 +7,6 @@ import numpy as np
 import torch
 import yaml
 
-from unimapgen.geo.errors import raise_geo_error
-
 
 _ENV_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
 
@@ -37,14 +35,11 @@ def _expand_env_recursive(x: Any) -> Any:
 
 
 def load_yaml(path: str) -> Dict[str, Any]:
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = yaml.safe_load(f)
-        if data is None:
-            return {}
-        return _expand_env_recursive(data)
-    except Exception as exc:
-        raise_geo_error("GEO-1100", f"failed to load yaml config: {path}", cause=exc)
+    with open(path, "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+    if data is None:
+        return {}
+    return _expand_env_recursive(data)
 
 
 def set_seed(seed: int) -> None:
@@ -55,10 +50,7 @@ def set_seed(seed: int) -> None:
 
 
 def ensure_dir(path: str) -> None:
-    try:
-        os.makedirs(path, exist_ok=True)
-    except Exception as exc:
-        raise_geo_error("GEO-1108", f"failed to create directory: {path}", cause=exc)
+    os.makedirs(path, exist_ok=True)
 
 
 def select_torch_device(prefer_cuda: bool = True) -> torch.device:
@@ -69,12 +61,11 @@ def select_torch_device(prefer_cuda: bool = True) -> torch.device:
             return torch.device("cpu")
         if forced.startswith("cuda"):
             if not torch.cuda.is_available():
-                raise_geo_error(
-                    "GEO-1407",
-                    "UNIMAPGEN_DEVICE requests CUDA, but torch.cuda.is_available() is False",
+                raise RuntimeError(
+                    "UNIMAPGEN_DEVICE requests CUDA, but torch.cuda.is_available() is False."
                 )
             return torch.device(forced)
-        raise_geo_error("GEO-1408", f"unsupported UNIMAPGEN_DEVICE value: {forced}")
+        raise ValueError(f"Unsupported UNIMAPGEN_DEVICE value: {forced}")
 
     if not prefer_cuda or not torch.cuda.is_available():
         return torch.device("cpu")

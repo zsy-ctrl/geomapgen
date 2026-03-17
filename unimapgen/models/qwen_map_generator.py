@@ -1,4 +1,3 @@
-import inspect
 import os
 import time
 from typing import Dict, Sequence
@@ -18,18 +17,9 @@ os.environ.setdefault("TRANSFORMERS_NO_FLAX", "1")
 try:
     from transformers import AutoModelForCausalLM
     _TRANSFORMERS_IMPORT_ERROR = None
-except Exception as exc:
+except Exception as exc:  # pragma: no cover
     AutoModelForCausalLM = None
     _TRANSFORMERS_IMPORT_ERROR = exc
-
-try:
-    from peft import LoraConfig, TaskType, get_peft_model
-    _PEFT_IMPORT_ERROR = None
-except Exception as exc:
-    LoraConfig = None
-    TaskType = None
-    get_peft_model = None
-    _PEFT_IMPORT_ERROR = exc
 
 
 class QwenSatelliteMapGenerator(nn.Module):
@@ -43,11 +33,6 @@ class QwenSatelliteMapGenerator(nn.Module):
         local_files_only: bool = True,
         freeze_satellite: bool = True,
         freeze_llm: bool = False,
-        llm_train_mode: str = "full",
-        lora_r: int = 16,
-        lora_alpha: int = 32,
-        lora_dropout: float = 0.05,
-        lora_target_modules: Sequence[str] = (),
         sat_token_hw=(8, 8),
         sat_patch_size: int = 14,
         sat_drop_cls_token: bool = True,
@@ -60,8 +45,6 @@ class QwenSatelliteMapGenerator(nn.Module):
         pv_use_camera_embedding: bool = False,
         pv_max_camera_groups: int = 16,
         gradient_checkpointing: bool = False,
-        llm_torch_dtype: str = "float16",
-        attn_implementation: str = "sdpa",
     ) -> None:
         super().__init__()
         if AutoModelForCausalLM is None:
@@ -72,8 +55,6 @@ class QwenSatelliteMapGenerator(nn.Module):
 
         self.dino_model_path = resolve_hf_snapshot_path(dino_model_path)
         self.qwen_model_path = resolve_hf_snapshot_path(qwen_model_path)
-        self.llm_train_mode = str(llm_train_mode).strip().lower()
-        llm_dtype = self._resolve_torch_dtype(llm_torch_dtype)
         print(f"[Init] Satellite backbone path: {self.dino_model_path}", flush=True)
         self.sat_encoder = SatelliteEncoder(
             model_name=self.dino_model_path,
@@ -89,11 +70,8 @@ class QwenSatelliteMapGenerator(nn.Module):
         llm_load_kwargs = dict(
             local_files_only=bool(local_files_only),
             trust_remote_code=True,
-            torch_dtype=llm_dtype,
+            torch_dtype="auto",
         )
-        attn_impl = str(attn_implementation or "").strip().lower()
-        if attn_impl:
-            llm_load_kwargs["attn_implementation"] = attn_impl
         try:
             self.llm = AutoModelForCausalLM.from_pretrained(
                 self.qwen_model_path,
@@ -107,13 +85,11 @@ class QwenSatelliteMapGenerator(nn.Module):
             )
         print(
             f"[Init] Qwen LLM loaded in {time.time() - llm_load_start:.1f}s "
-            f"(dtype={getattr(self.llm, 'dtype', 'unknown')} attn={attn_impl or 'default'})",
+            f"(dtype={getattr(self.llm, 'dtype', 'unknown')})",
             flush=True,
         )
         self.llm.resize_token_embeddings(int(vocab_size))
-        #self.hidden_size是qwen的hiddensize
         self.hidden_size = int(self.llm.config.hidden_size)
-        #sat_proj的输入维度是dino的hidden_size，输出维度是qwen的hiddensize
         self.sat_proj = nn.Linear(int(self.sat_encoder.hidden_size), self.hidden_size)
         self.use_pv = bool(use_pv)
         if self.use_pv:
@@ -141,66 +117,16 @@ class QwenSatelliteMapGenerator(nn.Module):
         if bool(freeze_satellite):
             for p in self.sat_encoder.parameters():
                 p.requires_grad = False
-            try:
-                self.sat_encoder.to(dtype=self.llm.dtype)
-            except Exception:
-                pass
         if bool(freeze_llm):
-            self.llm_train_mode = "freeze"
-
-        if self.llm_train_mode == "freeze":
             for p in self.llm.parameters():
                 p.requires_grad = False
             for p in self.sat_proj.parameters():
                 p.requires_grad = True
-        elif self.llm_train_mode == "lora":
-            if get_peft_model is None or LoraConfig is None or TaskType is None:
-                raise RuntimeError(
-                    "QwenSatelliteMapGenerator requested LoRA mode but peft is unavailable. "
-                    f"Original import error: {_PEFT_IMPORT_ERROR!r}"
-                )
-            target_modules = list(lora_target_modules) if lora_target_modules else [
-                "q_proj",
-                "k_proj",
-                "v_proj",
-                "o_proj",
-                "gate_proj",
-                "up_proj",
-                "down_proj",
-            ]
-            lora_cfg = LoraConfig(
-                task_type=TaskType.CAUSAL_LM,
-                r=int(lora_r),
-                lora_alpha=int(lora_alpha),
-                lora_dropout=float(lora_dropout),
-                target_modules=target_modules,
-                bias="none",
-            )
-            self.llm = get_peft_model(self.llm, lora_cfg)
-        elif self.llm_train_mode != "full":
-            raise RuntimeError(f"Unsupported llm_train_mode: {self.llm_train_mode}")
 
         if bool(gradient_checkpointing) and hasattr(self.llm, "gradient_checkpointing_enable"):
             self.llm.gradient_checkpointing_enable()
             if hasattr(self.llm.config, "use_cache"):
                 self.llm.config.use_cache = False
-        try:
-            self._llm_forward_arg_names = set(inspect.signature(self.llm.forward).parameters.keys())
-        except Exception:
-            self._llm_forward_arg_names = set()
-
-    @staticmethod
-    def _resolve_torch_dtype(value: str):
-        text = str(value or "").strip().lower()
-        if text in {"float16", "fp16", "half"}:
-            return torch.float16
-        if text in {"bfloat16", "bf16"}:
-            return torch.bfloat16
-        if text in {"float32", "fp32"}:
-            return torch.float32
-        if text in {"auto", ""}:
-            return "auto"
-        raise RuntimeError(f"Unsupported llm_torch_dtype: {value}")
 
     @torch.no_grad()
     def semantic_initialize_new_embeddings(self, qwen_map_tokenizer) -> Dict[str, int]:
@@ -241,12 +167,7 @@ class QwenSatelliteMapGenerator(nn.Module):
     ):
         sat_requires_grad = any(p.requires_grad for p in self.sat_encoder.parameters())
         with torch.set_grad_enabled(bool(sat_requires_grad)):
-            #这里是送入dino模型
             sat_tokens = self.sat_encoder(image)
-        sat_proj_dtype = self.sat_proj.weight.dtype
-        if sat_tokens.dtype != sat_proj_dtype:
-            sat_tokens = sat_tokens.to(dtype=sat_proj_dtype)
-            #这里是送入proj层转换
         sat_tokens = self.sat_proj(sat_tokens).to(dtype=self.llm_embed_dtype)
         sat_mask = torch.ones(
             (image.shape[0], sat_tokens.shape[1]),
@@ -292,7 +213,6 @@ class QwenSatelliteMapGenerator(nn.Module):
         state_attention_mask: torch.Tensor,
         map_input_ids: torch.Tensor,
         map_attention_mask: torch.Tensor,
-        return_logits: bool = True,
     ) -> Dict[str, torch.Tensor]:
         prefix_embeds, prefix_mask = self.encode_prefix(
             image=image,
@@ -302,23 +222,19 @@ class QwenSatelliteMapGenerator(nn.Module):
             state_input_ids=state_input_ids,
             state_attention_mask=state_attention_mask,
         )
-
-        #这里的map_input_ids从__call__中来，在__call__中调用的tokenizer，而它就是真值
         map_embeds = self.llm.get_input_embeddings()(map_input_ids).to(dtype=self.llm_embed_dtype)
         inputs_embeds = torch.cat([prefix_embeds, map_embeds], dim=1)
         attention_mask = torch.cat([prefix_mask, map_attention_mask.long()], dim=1)
-        #这里把前缀的embeds用掩码-100来表示不参与loss值计算，只做提示
+
         prefix_labels = torch.full(
             (image.shape[0], prefix_embeds.shape[1]),
             -100,
             device=image.device,
             dtype=torch.long,
         )
-        #不同patch的geojson真值不同，要用长短不一的padding补充，这里对padding位置用掩码-100表示不参与loss计算
         map_labels = map_input_ids.masked_fill(map_attention_mask.eq(0), -100)
         labels = torch.cat([prefix_labels, map_labels], dim=1)
 
-        #直到这里才把数据输入qwen计算
         outputs = self.llm(
             inputs_embeds=inputs_embeds,
             attention_mask=attention_mask,
@@ -326,40 +242,12 @@ class QwenSatelliteMapGenerator(nn.Module):
             use_cache=False,
             return_dict=True,
         )
-        #把labels传进去，Hugging Face的 causal LM 模型就会自动计算loss
-        loss = outputs.loss
-        logits = outputs.logits if bool(return_logits) else None
-        del outputs
-        result = {
-            "loss": loss,
+        return {
+            "loss": outputs.loss,
+            "logits": outputs.logits,
             "labels": labels,
             "prefix_length": torch.tensor(prefix_embeds.shape[1], device=image.device, dtype=torch.long),
         }
-        if logits is not None:
-            result["logits"] = logits
-        return result
-
-    def _build_position_ids(self, attention_mask: torch.Tensor) -> torch.Tensor:
-        position_ids = attention_mask.long().cumsum(dim=-1) - 1
-        return position_ids.clamp_min(0)
-
-    def _infer_context_limit(self) -> int:
-        for key in (
-            "max_position_embeddings",
-            "max_sequence_length",
-            "seq_length",
-            "n_positions",
-            "max_seq_len",
-            "model_max_length",
-        ):
-            value = getattr(self.llm.config, key, None)
-            try:
-                value = int(value)
-            except (TypeError, ValueError):
-                continue
-            if 0 < value < 10_000_000:
-                return value
-        return 4096
 
     @torch.no_grad()
     def generate(
@@ -378,7 +266,6 @@ class QwenSatelliteMapGenerator(nn.Module):
         grammar_helper=None,
         grammar_min_points_per_line: int = 2,
         grammar_max_lines: int = None,
-        use_kv_cache: bool = False,
         return_token_meta: bool = False,
     ) -> torch.Tensor:
         self.eval()
@@ -391,10 +278,6 @@ class QwenSatelliteMapGenerator(nn.Module):
             state_input_ids=state_input_ids,
             state_attention_mask=state_attention_mask,
         )
-        resolved_max_new_tokens = int(max_new_tokens)
-        if resolved_max_new_tokens <= 0:
-            resolved_max_new_tokens = max(1, self._infer_context_limit() - int(prefix_embeds.shape[1]) - 1)
-        resolved_min_new_tokens = min(max(0, int(min_new_tokens)), int(resolved_max_new_tokens))
         generated = torch.zeros((image.shape[0], 0), dtype=torch.long, device=device)
         allowed = self.allowed_map_token_ids.to(device=device)
         allowed_list = [int(x) for x in allowed.tolist()]
@@ -409,10 +292,23 @@ class QwenSatelliteMapGenerator(nn.Module):
             else None
         )
 
-        def _select_next_token(
-            raw_next_logits: torch.Tensor,
-            step: int,
-        ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        for step in range(int(max_new_tokens)):
+            if generated.shape[1] > 0:
+                gen_embeds = self.llm.get_input_embeddings()(generated).to(dtype=self.llm_embed_dtype)
+                inputs_embeds = torch.cat([prefix_embeds, gen_embeds], dim=1)
+                gen_mask = torch.ones_like(generated, dtype=torch.long)
+                attention_mask = torch.cat([prefix_mask, gen_mask], dim=1)
+            else:
+                inputs_embeds = prefix_embeds
+                attention_mask = prefix_mask
+
+            outputs = self.llm(
+                inputs_embeds=inputs_embeds,
+                attention_mask=attention_mask,
+                use_cache=False,
+                return_dict=True,
+            )
+            raw_next_logits = outputs.logits[:, -1, :]
             next_logits = raw_next_logits.clone()
             if float(repetition_penalty) > 1.0 and generated.shape[1] > 0:
                 for b in range(generated.shape[0]):
@@ -424,7 +320,7 @@ class QwenSatelliteMapGenerator(nn.Module):
             restricted = next_logits.index_select(dim=1, index=allowed)
             if float(temperature) > 1e-6 and float(temperature) != 1.0:
                 restricted = restricted / float(temperature)
-            if step < int(resolved_min_new_tokens):
+            if step < int(min_new_tokens):
                 eos_loc = allowed.eq(int(self.map_eos_token_id)).nonzero(as_tuple=False)
                 if eos_loc.numel() > 0:
                     restricted[:, int(eos_loc[0].item())] = -1e9
@@ -452,14 +348,7 @@ class QwenSatelliteMapGenerator(nn.Module):
             else:
                 chosen_idx = restricted.argmax(dim=-1, keepdim=True)
                 next_tok = allowed[chosen_idx]
-            return raw_next_logits, restricted, chosen_idx, next_tok
 
-        def _append_token_meta(
-            raw_next_logits: torch.Tensor,
-            restricted: torch.Tensor,
-            chosen_idx: torch.Tensor,
-            next_tok: torch.Tensor,
-        ) -> None:
             if token_meta is not None:
                 token_probs = torch.softmax(restricted, dim=-1)
                 chosen_prob = token_probs.gather(1, chosen_idx).squeeze(1)
@@ -491,127 +380,11 @@ class QwenSatelliteMapGenerator(nn.Module):
                         }
                     )
 
-        def _run_full_decode() -> torch.Tensor:
-            nonlocal generated, finished
-            for step in range(int(resolved_max_new_tokens)):
-                if generated.shape[1] > 0:
-                    gen_embeds = self.llm.get_input_embeddings()(generated).to(dtype=self.llm_embed_dtype)
-                    inputs_embeds = torch.cat([prefix_embeds, gen_embeds], dim=1)
-                    gen_mask = torch.ones_like(generated, dtype=torch.long)
-                    attention_mask = torch.cat([prefix_mask, gen_mask], dim=1)
-                else:
-                    inputs_embeds = prefix_embeds
-                    attention_mask = prefix_mask
-
-                outputs = self.llm(
-                    inputs_embeds=inputs_embeds,
-                    attention_mask=attention_mask,
-                    use_cache=False,
-                    return_dict=True,
-                )
-                raw_next_logits, restricted, chosen_idx, next_tok = _select_next_token(
-                    raw_next_logits=outputs.logits[:, -1, :],
-                    step=step,
-                )
-                _append_token_meta(
-                    raw_next_logits=raw_next_logits,
-                    restricted=restricted,
-                    chosen_idx=chosen_idx,
-                    next_tok=next_tok,
-                )
-                next_tok = next_tok.masked_fill(finished.unsqueeze(1), int(self.map_eos_token_id))
-                generated = torch.cat([generated, next_tok], dim=1)
-                finished = finished | next_tok.squeeze(1).eq(int(self.map_eos_token_id))
-                if bool(finished.all()):
-                    break
-            return generated
-
-        def _run_cached_decode() -> torch.Tensor:
-            nonlocal generated, finished
-            attention_mask = prefix_mask.clone()
-            first_kwargs = {
-                "inputs_embeds": prefix_embeds,
-                "attention_mask": attention_mask,
-                "use_cache": True,
-                "return_dict": True,
-            }
-            if "position_ids" in self._llm_forward_arg_names:
-                first_kwargs["position_ids"] = self._build_position_ids(attention_mask)
-            if "cache_position" in self._llm_forward_arg_names:
-                first_kwargs["cache_position"] = torch.arange(attention_mask.shape[1], device=device)
-            outputs = self.llm(**first_kwargs)
-            past_key_values = getattr(outputs, "past_key_values", None)
-            if past_key_values is None:
-                raise RuntimeError("LLM did not return past_key_values while use_cache=True")
-
-            for step in range(int(resolved_max_new_tokens)):
-                raw_next_logits, restricted, chosen_idx, next_tok = _select_next_token(
-                    raw_next_logits=outputs.logits[:, -1, :],
-                    step=step,
-                )
-                _append_token_meta(
-                    raw_next_logits=raw_next_logits,
-                    restricted=restricted,
-                    chosen_idx=chosen_idx,
-                    next_tok=next_tok,
-                )
-                next_tok = next_tok.masked_fill(finished.unsqueeze(1), int(self.map_eos_token_id))
-                generated = torch.cat([generated, next_tok], dim=1)
-                finished = finished | next_tok.squeeze(1).eq(int(self.map_eos_token_id))
-                if bool(finished.all()) or step + 1 >= int(resolved_max_new_tokens):
-                    break
-
-                attention_mask = torch.cat(
-                    [attention_mask, torch.ones((attention_mask.shape[0], 1), dtype=torch.long, device=device)],
-                    dim=1,
-                )
-                step_kwargs = {
-                    "input_ids": next_tok,
-                    "attention_mask": attention_mask,
-                    "past_key_values": past_key_values,
-                    "use_cache": True,
-                    "return_dict": True,
-                }
-                if "position_ids" in self._llm_forward_arg_names:
-                    step_kwargs["position_ids"] = self._build_position_ids(attention_mask)[:, -1:]
-                if "cache_position" in self._llm_forward_arg_names:
-                    step_kwargs["cache_position"] = torch.arange(
-                        attention_mask.shape[1] - 1,
-                        attention_mask.shape[1],
-                        device=device,
-                    )
-                outputs = self.llm(**step_kwargs)
-                past_key_values = getattr(outputs, "past_key_values", None)
-                if past_key_values is None:
-                    raise RuntimeError("LLM cache path lost past_key_values on decode step")
-            return generated
-
-        if bool(use_kv_cache):
-            try:
-                result = _run_cached_decode()
-            except Exception as exc:
-                print(f"[Generate] KV cache path failed ({exc}); falling back to full-context decode.", flush=True)
-                generated = torch.zeros((image.shape[0], 0), dtype=torch.long, device=device)
-                finished = torch.zeros((image.shape[0],), dtype=torch.bool, device=device)
-                if token_meta is not None:
-                    token_meta = [[] for _ in range(image.shape[0])]
-                result = _run_full_decode()
-        else:
-            result = _run_full_decode()
+            next_tok = next_tok.masked_fill(finished.unsqueeze(1), int(self.map_eos_token_id))
+            generated = torch.cat([generated, next_tok], dim=1)
+            finished = finished | next_tok.squeeze(1).eq(int(self.map_eos_token_id))
+            if bool(finished.all()):
+                break
         if token_meta is not None:
-            return result, token_meta
-        return result
-
-    def trainable_parameter_summary(self) -> Dict[str, int]:
-        total = 0
-        trainable = 0
-        for param in self.parameters():
-            count = int(param.numel())
-            total += count
-            if param.requires_grad:
-                trainable += count
-        return {
-            "mode": self.llm_train_mode,
-            "trainable": int(trainable),
-            "total": int(total),
-        }
+            return generated, token_meta
+        return generated

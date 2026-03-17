@@ -1,7 +1,5 @@
 import os
 
-from unimapgen.geo.errors import raise_geo_error
-
 
 def resolve_hf_snapshot_path(path: str) -> str:
     path = str(path)
@@ -25,4 +23,4 @@ def resolve_hf_snapshot_path(path: str) -> str:
         )
         if snaps:
             return snaps[-1]
-    raise_geo_error("GEO-1409", f"unable to resolve HuggingFace snapshot under: {path}")
+    raise FileNotFoundError(f"Unable to resolve HuggingFace snapshot under: {path}")
