@@ -1,7 +1,7 @@
 seed: 42
 
 data:
-  dataset_root: ${UNIMAPGEN_GEO_ROOT:-/home/zsy/Downloads/dataset-extracted}
+  dataset_root: ${UNIMAPGEN_GEO_ROOT:-/dataset/zsy/dataset-extracted}
   train_split: train
   val_split: val
   test_split: test
@@ -87,8 +87,8 @@ state_update:
   trace_num_points: ${UNIMAPGEN_STATE_TRACE_NUM_POINTS:-3}
 
 model:
-  dino_model_path: ${DINOV2_BACKBONE_PATH:-ckpts/dinov2}
-  qwen_model_path: ${QWEN_MODEL_PATH:-ckpts/qwen}
+  dino_model_path: ${DINOV2_BACKBONE_PATH:-/dataset/zsy/ckpts/dino}
+  qwen_model_path: ${QWEN_MODEL_PATH:-/dataset/zsy/ckpts/qwen}
   local_files_only: true
   freeze_satellite: true
   llm_train_mode: full

@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUTPUT_ROOT="${OUTPUT_ROOT:-$ROOT/outputs/geo_patch_v1_adapter}"
-DATASET_ROOT="${DATASET_ROOT:-/home/zsy/Downloads/dataset-extracted}"
+DATASET_ROOT="${DATASET_ROOT:-/dataset/zsy/dataset-extracted}"
 MODEL_PATH="${MODEL_PATH:-$ROOT/../ckpts/modelscope/Qwen/Qwen2___5-VL-3B-Instruct}"
 LLAMAFACTORY_BIN="${LLAMAFACTORY_BIN:-llamafactory-cli}"
 PYTHON_BIN="${PYTHON_BIN:-python}"

@@ -22,7 +22,7 @@ DEFAULT_SYSTEM_PROMPT = (
     "Keep all coordinates in the patch-local pixel coordinate system."
 )
 
-DEFAULT_DATASET_ROOT = "/home/zsy/Downloads/dataset-extracted"
+DEFAULT_DATASET_ROOT = "/dataset/zsy/dataset-extracted"
 DEFAULT_IMAGE_RELPATH = "patch_tif/0.tif"
 DEFAULT_LANE_RELPATH = "label_check_crop/Lane.geojson"
 DEFAULT_OUTPUT_CATEGORY = "road"

@@ -2,9 +2,9 @@
 set -euo pipefail
 
 CONFIG="configs/geo_vector_lora.yaml"
-DATASET_ROOT="/home/zsy/Downloads/dataset-extracted"
-DINO_MODEL_PATH=""
-QWEN_MODEL_PATH=""
+DATASET_ROOT="/dataset/zsy/dataset-extracted"
+DINO_MODEL_PATH="/dataset/zsy/ckpts/dino"
+QWEN_MODEL_PATH="/dataset/zsy/ckpts/qwen"
 LLM_TORCH_DTYPE="float16"
 ATTN_IMPLEMENTATION="sdpa"
 DEVICE=""

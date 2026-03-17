@@ -2,9 +2,9 @@
 set -euo pipefail
 
 CONFIG="configs/geo_vector_full.yaml"
-DATASET_ROOT="/home/zsy/Downloads/dataset-extracted"
-DINO_MODEL_PATH=""
-QWEN_MODEL_PATH=""
+DATASET_ROOT="/dataset/zsy/dataset-extracted"
+DINO_MODEL_PATH="/dataset/zsy/ckpts/dino"
+QWEN_MODEL_PATH="/dataset/zsy/ckpts/qwen"
 DEVICE=""
 OUTPUT_DIR=""
 RUN_NAME=""
