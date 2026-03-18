@@ -17,11 +17,50 @@ STAGE_B_OUTPUT="${STAGE_B_OUTPUT:-$STAGE_B_ROOT/checkpoints}"
 
 mkdir -p "$STAGE_B_ROOT"
 
+detect_precision_mode() {
+  "$PYTHON_BIN" - <<'PY'
+import sys
+try:
+    import torch
+except Exception:
+    print("fp16")
+    raise SystemExit(0)
+if not torch.cuda.is_available():
+    print("fp16")
+    raise SystemExit(0)
+major, minor = (0, 0)
+try:
+    version = tuple(int(x) for x in str(torch.__version__).split("+")[0].split(".")[:2])
+    major, minor = version
+except Exception:
+    pass
+if major < 2:
+    print("fp16")
+    raise SystemExit(0)
+try:
+    if torch.cuda.is_bf16_supported():
+        print("bf16")
+    else:
+        print("fp16")
+except Exception:
+    print("fp16")
+PY
+}
+
 if [[ ! -f "$FAMILY_MANIFEST" ]]; then
   bash "$ROOT/scripts/run_geo_current_v1_build_manifest.sh"
 fi
 if [[ ! -d "$STAGE_A_OUTPUT" ]]; then
   bash "$ROOT/scripts/run_geo_current_v1_stagea_train_1gpu.sh"
+fi
+
+PRECISION_MODE="${PRECISION_MODE:-$(detect_precision_mode)}"
+if [[ "$PRECISION_MODE" == "bf16" ]]; then
+  BF16_FLAG="true"
+  FP16_FLAG="false"
+else
+  BF16_FLAG="false"
+  FP16_FLAG="true"
 fi
 
 echo "[GeoCurrentV1] export Stage B dataset -> $STAGE_B_DATASET"
@@ -87,7 +126,8 @@ learning_rate: ${LEARNING_RATE:-5.0e-5}
 num_train_epochs: ${NUM_TRAIN_EPOCHS:-2.0}
 lr_scheduler_type: cosine
 warmup_ratio: ${WARMUP_RATIO:-0.03}
-bf16: true
+bf16: $BF16_FLAG
+fp16: $FP16_FLAG
 ddp_timeout: 180000000
 
 ### eval
@@ -96,5 +136,5 @@ eval_steps: ${EVAL_STEPS:-200}
 EOF
 
 export CUDA_VISIBLE_DEVICES="${GPU_ID:-0}"
-echo "[GeoCurrentV1] train Stage B on GPU=$CUDA_VISIBLE_DEVICES"
+echo "[GeoCurrentV1] train Stage B on GPU=$CUDA_VISIBLE_DEVICES precision=$PRECISION_MODE"
 "$LLAMAFACTORY_BIN" train "$STAGE_B_CONFIG"

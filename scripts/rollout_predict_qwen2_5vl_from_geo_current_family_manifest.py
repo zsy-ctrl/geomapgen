@@ -49,6 +49,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--top-p", type=float, default=1.0)
     parser.add_argument("--do-sample", action="store_true")
+    parser.add_argument("--precision", type=str, default="auto", choices=["auto", "fp16", "bf16", "fp32"])
     parser.add_argument("--resample-step-px", type=float, default=12.0)
     parser.add_argument("--boundary-tol-px", type=float, default=2.5)
     parser.add_argument("--trace-points", type=int, default=8)
@@ -62,6 +63,31 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--use-patch-only-prompt-when-empty", action="store_true")
     parser.add_argument("--export-visualizations", action="store_true")
     return parser.parse_args()
+
+
+def resolve_torch_dtype(precision: str) -> torch.dtype:
+    mode = str(precision).strip().lower()
+    if mode == "fp32":
+        return torch.float32
+    if mode == "fp16":
+        return torch.float16
+    if mode == "bf16":
+        return torch.bfloat16
+    if not torch.cuda.is_available():
+        return torch.float32
+    major = 0
+    try:
+        major = int(str(torch.__version__).split("+")[0].split(".")[0])
+    except Exception:
+        major = 0
+    if major < 2:
+        return torch.float16
+    try:
+        if torch.cuda.is_bf16_supported():
+            return torch.bfloat16
+    except Exception:
+        pass
+    return torch.float16
 
 
 def build_conversation(prompt_text: str, system_text: str, image_ref: str) -> List[Dict[str, Any]]:
@@ -245,9 +271,10 @@ def main() -> None:
     if args.engine == "custom":
         processor_path = args.processor_path or args.adapter
         processor = AutoProcessor.from_pretrained(processor_path, trust_remote_code=True)
+        torch_dtype = resolve_torch_dtype(args.precision)
         base_model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
             args.base_model,
-            torch_dtype=torch.bfloat16,
+            torch_dtype=torch_dtype,
             device_map="auto" if str(args.device).startswith("cuda") else None,
             trust_remote_code=True,
         )
@@ -258,6 +285,13 @@ def main() -> None:
     else:
         from llamafactory.chat import ChatModel
 
+        infer_dtype = "bfloat16"
+        resolved_dtype = resolve_torch_dtype(args.precision)
+        if resolved_dtype == torch.float16:
+            infer_dtype = "float16"
+        elif resolved_dtype == torch.float32:
+            infer_dtype = "float32"
+
         infer_args = {
             "model_name_or_path": args.base_model,
             "adapter_name_or_path": args.adapter,
@@ -265,7 +299,7 @@ def main() -> None:
             "stage": "sft",
             "template": args.template,
             "infer_backend": "huggingface",
-            "infer_dtype": "bfloat16",
+            "infer_dtype": infer_dtype,
             "trust_remote_code": True,
             "image_max_pixels": int(args.image_max_pixels),
         }

@@ -12,7 +12,7 @@ mkdir -p "$OUTPUT_ROOT"
 echo "[GeoCurrentV1] build family manifest -> $FAMILY_MANIFEST"
 "$PYTHON_BIN" "$ROOT/scripts/build_geo_current_family_manifest.py" \
   --dataset-root "$DATASET_ROOT" \
-  --output-jsonl "$FAMILY_MANIFEST" \
+  --output-manifest "$FAMILY_MANIFEST" \
   --tile-size-px "${TILE_SIZE_PX:-1024}" \
   --overlap-px "${OVERLAP_PX:-256}" \
   --keep-margin-px "${KEEP_MARGIN_PX:-128}" \
@@ -21,4 +21,3 @@ echo "[GeoCurrentV1] build family manifest -> $FAMILY_MANIFEST"
   --tile-min-mask-pixels "${TILE_MIN_MASK_PIXELS:-256}" \
   --search-within-review-bbox \
   --fallback-to-all-if-empty
-
