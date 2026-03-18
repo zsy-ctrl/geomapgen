@@ -1,20 +1,7 @@
---extra-index-url https://download.pytorch.org/whl/cu117
-
-torch==1.13.1+cu117
-torchvision==0.14.1+cu117
-torchaudio==0.13.1+cu117
-
-numpy<2
-scipy<1.14
-pillow
-pyyaml
-pyproj
-rasterio
-sentencepiece
-einops
-datasets
-safetensors
-accelerate
-peft
-transformers
-llamafactory
+# Use one of the dedicated dependency files instead of this placeholder:
+#
+#   Dataset processing only:
+#     pip install -r requirements.data.txt
+#
+#   Training and rollout:
+#     pip install -r requirements.train.txt

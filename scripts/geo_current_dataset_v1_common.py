@@ -629,8 +629,14 @@ def build_manifest_for_dataset(
     search_within_review_bbox: bool,
     fallback_to_all_if_empty: bool,
     max_samples_per_split: int,
+    shard_index: int = 0,
+    num_shards: int = 1,
 ) -> List[Dict]:
     families: List[Dict] = []
+    shard_index = max(0, int(shard_index))
+    num_shards = max(1, int(num_shards))
+    if shard_index >= num_shards:
+        raise ValueError(f"Invalid shard config: shard_index={shard_index} num_shards={num_shards}")
     for split in splits:
         split_root = dataset_root / str(split)
         if not split_root.is_dir():
@@ -639,7 +645,13 @@ def build_manifest_for_dataset(
         sample_dirs = [path for path in sorted(split_root.iterdir()) if path.is_dir()]
         if int(max_samples_per_split) > 0:
             sample_dirs = sample_dirs[: int(max_samples_per_split)]
-        print(f"[Manifest] split={split} sample_count={len(sample_dirs)} root={split_root}", flush=True)
+        if num_shards > 1:
+            sample_dirs = [path for idx, path in enumerate(sample_dirs) if idx % num_shards == shard_index]
+        print(
+            f"[Manifest] split={split} sample_count={len(sample_dirs)} root={split_root} "
+            f"shard={shard_index + 1}/{num_shards}",
+            flush=True,
+        )
         split_family_count = 0
         split_patch_count = 0
         for sample_index, sample_dir in enumerate(sample_dirs, start=1):

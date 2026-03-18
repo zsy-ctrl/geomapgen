@@ -10,9 +10,11 @@ MODEL_PATH="${MODEL_PATH:-$QWEN_ROOT}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-$ROOT/outputs/geo_current_v1}"
 FAMILY_MANIFEST="${FAMILY_MANIFEST:-$OUTPUT_ROOT/family_manifest.jsonl}"
 STAGE_A_ROOT="${STAGE_A_ROOT:-$OUTPUT_ROOT/stage_a}"
-STAGE_A_DATASET="$STAGE_A_ROOT/dataset"
+STAGE_A_DATASET="${STAGE_A_DATASET:-$STAGE_A_ROOT/dataset}"
 STAGE_A_CONFIG="$STAGE_A_ROOT/qwen2_5vl_3b_lora_sft.yaml"
 STAGE_A_OUTPUT="${STAGE_A_OUTPUT:-$STAGE_A_ROOT/checkpoints}"
+BUILD_MANIFEST_IF_MISSING="${BUILD_MANIFEST_IF_MISSING:-1}"
+EXPORT_STAGE_A_DATASET="${EXPORT_STAGE_A_DATASET:-1}"
 
 mkdir -p "$STAGE_A_ROOT"
 
@@ -46,8 +48,16 @@ except Exception:
 PY
 }
 
-if [[ ! -f "$FAMILY_MANIFEST" ]]; then
+if [[ ! -f "$FAMILY_MANIFEST" && "$BUILD_MANIFEST_IF_MISSING" == "1" ]]; then
   bash "$ROOT/scripts/run_geo_current_v1_build_manifest.sh"
+fi
+if [[ "$EXPORT_STAGE_A_DATASET" == "1" && ! -f "$FAMILY_MANIFEST" ]]; then
+  echo "[GeoCurrentV1] missing family manifest: $FAMILY_MANIFEST" >&2
+  exit 1
+fi
+if [[ "$EXPORT_STAGE_A_DATASET" != "1" && ! -f "$STAGE_A_DATASET/train.jsonl" ]]; then
+  echo "[GeoCurrentV1] missing preprocessed Stage A dataset: $STAGE_A_DATASET/train.jsonl" >&2
+  exit 1
 fi
 
 PRECISION_MODE="${PRECISION_MODE:-$(detect_precision_mode)}"
@@ -59,14 +69,18 @@ else
   FP16_FLAG="true"
 fi
 
-echo "[GeoCurrentV1] export Stage A dataset -> $STAGE_A_DATASET"
-"$PYTHON_BIN" "$ROOT/scripts/export_llamafactory_patch_only_from_geo_current_family_manifest.py" \
-  --family-manifest "$FAMILY_MANIFEST" \
-  --output-root "$STAGE_A_DATASET" \
-  --splits train val \
-  --use-system-prompt \
-  --resample-step-px "${RESAMPLE_STEP_PX:-12.0}" \
-  --boundary-tol-px "${BOUNDARY_TOL_PX:-2.5}"
+if [[ "$EXPORT_STAGE_A_DATASET" == "1" ]]; then
+  echo "[GeoCurrentV1] export Stage A dataset -> $STAGE_A_DATASET"
+  "$PYTHON_BIN" "$ROOT/scripts/export_llamafactory_patch_only_from_geo_current_family_manifest.py" \
+    --family-manifest "$FAMILY_MANIFEST" \
+    --output-root "$STAGE_A_DATASET" \
+    --splits train val \
+    --use-system-prompt \
+    --resample-step-px "${RESAMPLE_STEP_PX:-12.0}" \
+    --boundary-tol-px "${BOUNDARY_TOL_PX:-2.5}"
+else
+  echo "[GeoCurrentV1] reuse Stage A dataset -> $STAGE_A_DATASET"
+fi
 
 cat > "$STAGE_A_CONFIG" <<EOF
 ### model

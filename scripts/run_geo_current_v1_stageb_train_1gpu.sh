@@ -11,9 +11,12 @@ OUTPUT_ROOT="${OUTPUT_ROOT:-$ROOT/outputs/geo_current_v1}"
 FAMILY_MANIFEST="${FAMILY_MANIFEST:-$OUTPUT_ROOT/family_manifest.jsonl}"
 STAGE_A_OUTPUT="${STAGE_A_OUTPUT:-$OUTPUT_ROOT/stage_a/checkpoints}"
 STAGE_B_ROOT="${STAGE_B_ROOT:-$OUTPUT_ROOT/stage_b}"
-STAGE_B_DATASET="$STAGE_B_ROOT/dataset"
+STAGE_B_DATASET="${STAGE_B_DATASET:-$STAGE_B_ROOT/dataset}"
 STAGE_B_CONFIG="$STAGE_B_ROOT/qwen2_5vl_3b_lora_sft.yaml"
 STAGE_B_OUTPUT="${STAGE_B_OUTPUT:-$STAGE_B_ROOT/checkpoints}"
+BUILD_MANIFEST_IF_MISSING="${BUILD_MANIFEST_IF_MISSING:-1}"
+EXPORT_STAGE_B_DATASET="${EXPORT_STAGE_B_DATASET:-1}"
+TRAIN_STAGE_A_IF_MISSING="${TRAIN_STAGE_A_IF_MISSING:-1}"
 
 mkdir -p "$STAGE_B_ROOT"
 
@@ -47,11 +50,22 @@ except Exception:
 PY
 }
 
-if [[ ! -f "$FAMILY_MANIFEST" ]]; then
+if [[ ! -f "$FAMILY_MANIFEST" && "$BUILD_MANIFEST_IF_MISSING" == "1" ]]; then
   bash "$ROOT/scripts/run_geo_current_v1_build_manifest.sh"
 fi
-if [[ ! -d "$STAGE_A_OUTPUT" ]]; then
+if [[ "$EXPORT_STAGE_B_DATASET" == "1" && ! -f "$FAMILY_MANIFEST" ]]; then
+  echo "[GeoCurrentV1] missing family manifest: $FAMILY_MANIFEST" >&2
+  exit 1
+fi
+if [[ "$EXPORT_STAGE_B_DATASET" != "1" && ! -f "$STAGE_B_DATASET/train.jsonl" ]]; then
+  echo "[GeoCurrentV1] missing preprocessed Stage B dataset: $STAGE_B_DATASET/train.jsonl" >&2
+  exit 1
+fi
+if [[ ! -d "$STAGE_A_OUTPUT" && "$TRAIN_STAGE_A_IF_MISSING" == "1" ]]; then
   bash "$ROOT/scripts/run_geo_current_v1_stagea_train_1gpu.sh"
+elif [[ ! -d "$STAGE_A_OUTPUT" ]]; then
+  echo "[GeoCurrentV1] missing Stage A checkpoint dir: $STAGE_A_OUTPUT" >&2
+  exit 1
 fi
 
 PRECISION_MODE="${PRECISION_MODE:-$(detect_precision_mode)}"
@@ -63,23 +77,27 @@ else
   FP16_FLAG="true"
 fi
 
-echo "[GeoCurrentV1] export Stage B dataset -> $STAGE_B_DATASET"
-"$PYTHON_BIN" "$ROOT/scripts/export_llamafactory_state_sft_from_geo_current_family_manifest.py" \
-  --family-manifest "$FAMILY_MANIFEST" \
-  --output-root "$STAGE_B_DATASET" \
-  --splits train val \
-  --use-system-prompt \
-  --resample-step-px "${RESAMPLE_STEP_PX:-12.0}" \
-  --boundary-tol-px "${BOUNDARY_TOL_PX:-2.5}" \
-  --trace-points "${TRACE_POINTS:-8}" \
-  --state-mixture-mode "${STATE_MIXTURE_MODE:-mixed}" \
-  --state-no-state-ratio "${STATE_NO_STATE_RATIO:-0.30}" \
-  --state-weak-ratio "${STATE_WEAK_RATIO:-0.40}" \
-  --state-full-ratio "${STATE_FULL_RATIO:-0.30}" \
-  --state-weak-trace-points "${STATE_WEAK_TRACE_POINTS:-3}" \
-  --state-line-dropout "${STATE_LINE_DROPOUT:-0.40}" \
-  --state-point-jitter-px "${STATE_POINT_JITTER_PX:-2.0}" \
-  --state-truncate-prob "${STATE_TRUNCATE_PROB:-0.30}"
+if [[ "$EXPORT_STAGE_B_DATASET" == "1" ]]; then
+  echo "[GeoCurrentV1] export Stage B dataset -> $STAGE_B_DATASET"
+  "$PYTHON_BIN" "$ROOT/scripts/export_llamafactory_state_sft_from_geo_current_family_manifest.py" \
+    --family-manifest "$FAMILY_MANIFEST" \
+    --output-root "$STAGE_B_DATASET" \
+    --splits train val \
+    --use-system-prompt \
+    --resample-step-px "${RESAMPLE_STEP_PX:-12.0}" \
+    --boundary-tol-px "${BOUNDARY_TOL_PX:-2.5}" \
+    --trace-points "${TRACE_POINTS:-8}" \
+    --state-mixture-mode "${STATE_MIXTURE_MODE:-mixed}" \
+    --state-no-state-ratio "${STATE_NO_STATE_RATIO:-0.30}" \
+    --state-weak-ratio "${STATE_WEAK_RATIO:-0.40}" \
+    --state-full-ratio "${STATE_FULL_RATIO:-0.30}" \
+    --state-weak-trace-points "${STATE_WEAK_TRACE_POINTS:-3}" \
+    --state-line-dropout "${STATE_LINE_DROPOUT:-0.40}" \
+    --state-point-jitter-px "${STATE_POINT_JITTER_PX:-2.0}" \
+    --state-truncate-prob "${STATE_TRUNCATE_PROB:-0.30}"
+else
+  echo "[GeoCurrentV1] reuse Stage B dataset -> $STAGE_B_DATASET"
+fi
 
 cat > "$STAGE_B_CONFIG" <<EOF
 ### model

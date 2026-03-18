@@ -32,6 +32,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--search-within-review-bbox", action="store_true")
     parser.add_argument("--fallback-to-all-if-empty", action="store_true")
     parser.add_argument("--max-samples-per-split", type=int, default=0)
+    parser.add_argument("--shard-index", type=int, default=0)
+    parser.add_argument("--num-shards", type=int, default=1)
     return parser.parse_args()
 
 
@@ -56,6 +58,8 @@ def main() -> None:
         search_within_review_bbox=bool(args.search_within_review_bbox),
         fallback_to_all_if_empty=bool(args.fallback_to_all_if_empty),
         max_samples_per_split=int(args.max_samples_per_split),
+        shard_index=int(args.shard_index),
+        num_shards=int(args.num_shards),
     )
     count = write_jsonl(output_manifest, families)
     summary = {
@@ -67,6 +71,8 @@ def main() -> None:
         "keep_margin_px": int(args.keep_margin_px),
         "review_crop_pad_px": int(args.review_crop_pad_px),
         "family_count": int(count),
+        "shard_index": int(args.shard_index),
+        "num_shards": int(args.num_shards),
     }
     with output_manifest.with_suffix(".summary.json").open("w", encoding="utf-8") as f:
         json.dump(summary, f, ensure_ascii=False, indent=2)
