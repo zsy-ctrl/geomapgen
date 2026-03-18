@@ -136,6 +136,17 @@ def read_rgb_geotiff(path: Path, band_indices: Sequence[int]) -> Tuple[np.ndarra
     return image, meta
 
 
+def read_raster_meta(path: Path) -> RasterMeta:
+    with rasterio_open(path) as ds:
+        return RasterMeta(
+            path=str(path),
+            width=int(ds.width),
+            height=int(ds.height),
+            crs=str(ds.crs) if ds.crs is not None else "",
+            transform=[float(x) for x in tuple(ds.transform)[:6]],
+        )
+
+
 def read_binary_mask(path: Path, threshold: int) -> np.ndarray:
     with rasterio_open(path) as ds:
         arr = ds.read(1)
@@ -623,24 +634,37 @@ def build_manifest_for_dataset(
     for split in splits:
         split_root = dataset_root / str(split)
         if not split_root.is_dir():
+            print(f"[Manifest] skip split={split} reason=missing_dir path={split_root}", flush=True)
             continue
         sample_dirs = [path for path in sorted(split_root.iterdir()) if path.is_dir()]
         if int(max_samples_per_split) > 0:
             sample_dirs = sample_dirs[: int(max_samples_per_split)]
-        for sample_dir in sample_dirs:
+        print(f"[Manifest] split={split} sample_count={len(sample_dirs)} root={split_root}", flush=True)
+        split_family_count = 0
+        split_patch_count = 0
+        for sample_index, sample_dir in enumerate(sample_dirs, start=1):
             sample_id = str(sample_dir.name)
+            print(f"[Manifest] split={split} sample={sample_index}/{len(sample_dirs)} sample_id={sample_id} stage=scan", flush=True)
             image_path = sample_dir / image_relpath
             mask_path = sample_dir / mask_relpath
             lane_path = sample_dir / lane_relpath
             intersection_path = sample_dir / intersection_relpath
             if not image_path.is_file():
+                print(f"[Manifest] split={split} sample_id={sample_id} stage=skip reason=missing_image path={image_path}", flush=True)
                 continue
-            _, raster_meta = read_rgb_geotiff(image_path, band_indices=[1, 2, 3])
+            print(f"[Manifest] split={split} sample_id={sample_id} stage=read_meta", flush=True)
+            raster_meta = read_raster_meta(image_path)
             review_mask = read_binary_mask(mask_path, threshold=mask_threshold) if mask_path.is_file() else None
+            print(
+                f"[Manifest] split={split} sample_id={sample_id} stage=mask "
+                f"mask_present={bool(mask_path.is_file())} image_size=({raster_meta.width},{raster_meta.height})",
+                flush=True,
+            )
             review_bbox = compute_mask_bbox(review_mask) if review_mask is not None else None
             region_bbox = None
             if bool(search_within_review_bbox) and review_bbox is not None:
                 region_bbox = expand_bbox(review_bbox, pad_px=int(review_crop_pad_px), width=int(raster_meta.width), height=int(raster_meta.height))
+            print(f"[Manifest] split={split} sample_id={sample_id} stage=tile_windows region_bbox={region_bbox}", flush=True)
             tile_windows = generate_tile_windows(
                 width=int(raster_meta.width),
                 height=int(raster_meta.height),
@@ -656,6 +680,11 @@ def build_manifest_for_dataset(
                 min_mask_pixels=int(tile_min_mask_pixels),
                 max_tiles=None if int(tile_max_per_sample) <= 0 else int(tile_max_per_sample),
                 fallback_to_all_if_empty=bool(fallback_to_all_if_empty),
+            )
+            print(
+                f"[Manifest] split={split} sample_id={sample_id} stage=selected "
+                f"candidate_tiles={len(tile_windows)} selected_tiles={len(selected_windows)}",
+                flush=True,
             )
             selected_windows = sorted(selected_windows, key=lambda item: (int(item.y0), int(item.x0)))
             y_keys = sorted({int(item.y0) for item in selected_windows})
@@ -714,6 +743,17 @@ def build_manifest_for_dataset(
                     "tile_audits": tile_audits,
                 }
             )
+            split_family_count += 1
+            split_patch_count += len(patches)
+            print(
+                f"[Manifest] split={split} sample_id={sample_id} stage=done "
+                f"family_index={split_family_count} patch_count={len(patches)} total_split_patches={split_patch_count}",
+                flush=True,
+            )
+        print(
+            f"[Manifest] split={split} completed families={split_family_count} patches={split_patch_count}",
+            flush=True,
+        )
     return families
 
 
