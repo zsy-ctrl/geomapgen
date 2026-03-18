@@ -30,19 +30,10 @@ echo "[GeoCurrentV1] process shard root=$SHARD_ROOT shard=$((SHARD_INDEX + 1))/$
   --search-within-review-bbox \
   --fallback-to-all-if-empty
 
-echo "[GeoCurrentV1] export shard Stage A dataset -> $STAGE_A_DATASET"
-"$PYTHON_BIN" "$ROOT/scripts/export_llamafactory_patch_only_from_geo_current_family_manifest.py" \
+echo "[GeoCurrentV1] export shard Stage A + Stage B datasets -> $SHARD_ROOT"
+"$PYTHON_BIN" "$ROOT/scripts/export_llamafactory_both_from_geo_current_family_manifest.py" \
   --family-manifest "$FAMILY_MANIFEST" \
-  --output-root "$STAGE_A_DATASET" \
-  --splits train val \
-  --use-system-prompt \
-  --resample-step-px "${RESAMPLE_STEP_PX:-12.0}" \
-  --boundary-tol-px "${BOUNDARY_TOL_PX:-2.5}"
-
-echo "[GeoCurrentV1] export shard Stage B dataset -> $STAGE_B_DATASET"
-"$PYTHON_BIN" "$ROOT/scripts/export_llamafactory_state_sft_from_geo_current_family_manifest.py" \
-  --family-manifest "$FAMILY_MANIFEST" \
-  --output-root "$STAGE_B_DATASET" \
+  --output-root "$SHARD_ROOT" \
   --splits train val \
   --use-system-prompt \
   --resample-step-px "${RESAMPLE_STEP_PX:-12.0}" \
