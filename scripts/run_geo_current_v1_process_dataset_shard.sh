@@ -7,6 +7,7 @@ DATASET_ROOT="${DATASET_ROOT:-/dataset/zsy/dataset-extracted}"
 PROCESSED_ROOT="${PROCESSED_ROOT:-$ROOT/outputs/geo_current_v1_processed}"
 SHARD_INDEX="${SHARD_INDEX:-0}"
 NUM_SHARDS="${NUM_SHARDS:-1}"
+SPLITS="${SPLITS:-train val}"
 SHARD_TAG="${SHARD_TAG:-shard_$(printf '%02d' "$SHARD_INDEX")_of_$(printf '%02d' "$NUM_SHARDS")}"
 SHARD_ROOT="${SHARD_ROOT:-$PROCESSED_ROOT/$SHARD_TAG}"
 FAMILY_MANIFEST="${FAMILY_MANIFEST:-$SHARD_ROOT/family_manifest.jsonl}"
@@ -19,6 +20,7 @@ echo "[GeoCurrentV1] process shard root=$SHARD_ROOT shard=$((SHARD_INDEX + 1))/$
 "$PYTHON_BIN" "$ROOT/scripts/build_geo_current_family_manifest.py" \
   --dataset-root "$DATASET_ROOT" \
   --output-manifest "$FAMILY_MANIFEST" \
+  --splits $SPLITS \
   --tile-size-px "${TILE_SIZE_PX:-1024}" \
   --overlap-px "${OVERLAP_PX:-256}" \
   --keep-margin-px "${KEEP_MARGIN_PX:-128}" \
@@ -34,7 +36,7 @@ echo "[GeoCurrentV1] export shard Stage A + Stage B datasets -> $SHARD_ROOT"
 "$PYTHON_BIN" "$ROOT/scripts/export_llamafactory_both_from_geo_current_family_manifest.py" \
   --family-manifest "$FAMILY_MANIFEST" \
   --output-root "$SHARD_ROOT" \
-  --splits train val \
+  --splits $SPLITS \
   --use-system-prompt \
   --resample-step-px "${RESAMPLE_STEP_PX:-12.0}" \
   --boundary-tol-px "${BOUNDARY_TOL_PX:-2.5}" \
