@@ -228,13 +228,38 @@ def build_axis_centers_for_region(
     max_center = int(region_end) - half
     if max_center < min_center:
         return []
+    stride = max(1, int(base_stride_px))
     anchor = int(region_start) + int(base_start_px)
-    centers = [int(anchor + int(base_stride_px) * i) for i in range(max(1, int(axis_count)))]
-    centers = [int(c) for c in centers if min_center <= int(c) <= max_center]
-    if centers:
-        return centers
-    center = int(round(0.5 * float(min_center + max_center)))
-    return [int(np.clip(center, min_center, max_center))]
+    min_count = max(1, int(axis_count))
+
+    centers = [int(anchor + stride * i) for i in range(min_count)]
+    centers = sorted({int(c) for c in centers if min_center <= int(c) <= max_center})
+
+    if not centers:
+        center = int(round(0.5 * float(min_center + max_center)))
+        return [int(np.clip(center, min_center, max_center))]
+
+    first = int(centers[0])
+    while first - stride >= min_center:
+        first -= stride
+        centers.insert(0, int(first))
+
+    last = int(centers[-1])
+    while last + stride <= max_center:
+        last += stride
+        centers.append(int(last))
+
+    if centers[0] > min_center:
+        centers.insert(0, int(min_center))
+    if centers[-1] < max_center:
+        centers.append(int(max_center))
+
+    deduped: List[int] = []
+    for center in centers:
+        clipped = int(np.clip(int(center), min_center, max_center))
+        if not deduped or deduped[-1] != clipped:
+            deduped.append(clipped)
+    return deduped
 
 
 def build_family_patches_from_centers(
