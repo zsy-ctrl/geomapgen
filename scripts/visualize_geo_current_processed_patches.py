@@ -14,7 +14,7 @@ from reconstruct_geo_current_from_processed_dataset import (
     load_dataset_image_map,
     load_manifest_map,
 )
-from geo_current_dataset_v1_common import load_jsonl
+from geo_current_dataset_v1_common import load_jsonl, uv_lines_to_local
 
 
 def parse_args() -> argparse.Namespace:
@@ -110,14 +110,14 @@ def main() -> None:
             patch_dir = sample_out / f"p{patch_id:04d}"
             ensure_dir(patch_dir)
 
-            quantized_lines = _build_visual_lines(
-                row.get("target_lines_quantized", row.get("target_lines", [])),
-                kind="quantized",
-            )
-            float_lines = _build_visual_lines(
-                row.get("target_lines_float", row.get("target_lines", [])),
-                kind="float",
-            )
+            quantized_source = row.get("target_lines_quantized", [])
+            if not quantized_source:
+                quantized_source = uv_lines_to_local(row.get("target_lines", []), patch=row)
+            quantized_lines = _build_visual_lines(quantized_source, kind="quantized")
+            float_source = row.get("target_lines_float", [])
+            if not float_source:
+                float_source = uv_lines_to_local(row.get("target_lines", []), patch=row)
+            float_lines = _build_visual_lines(float_source, kind="float")
 
             patch_image.save(patch_dir / "patch.png")
             build_overlay_image(canvas=patch_np, visual_lines=quantized_lines).save(

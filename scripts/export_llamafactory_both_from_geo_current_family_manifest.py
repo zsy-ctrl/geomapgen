@@ -20,6 +20,7 @@ from geo_current_dataset_v1_common import (
     ensure_dir,
     extract_state_lines,
     family_global_lines,
+    local_lines_to_uv,
     load_family_raster_and_mask,
     load_jsonl,
     write_jsonl,
@@ -123,9 +124,9 @@ def main() -> None:
         for patch in sorted(list(family["patches"]), key=lambda item: int(item["patch_id"])):
             patch_id = int(patch["patch_id"])
             patch_image = build_patch_image(raw_image_hwc=raw_image_hwc, patch=patch)
+            target_lines_float = build_patch_target_lines_float(owned_segments_by_patch.get(patch_id, []), patch=patch)
             target_lines = build_patch_target_lines(owned_segments_by_patch.get(patch_id, []), patch=patch)
             target_lines_quantized = build_patch_target_lines_quantized(owned_segments_by_patch.get(patch_id, []), patch=patch)
-            target_lines_float = build_patch_target_lines_float(owned_segments_by_patch.get(patch_id, []), patch=patch)
             image_rel = Path("images") / split / str(family["family_id"]) / f"p{patch_id:04d}.png"
 
             out_stagea_image = stage_a_root / image_rel
@@ -193,10 +194,11 @@ def main() -> None:
                 state_truncate_prob=float(args.state_truncate_prob),
                 rng=sample_rng,
             )
+            state_lines_uv = local_lines_to_uv(state_lines, patch=patch)
             stageb_rows[split].append(
                 build_state_record(
                     image_rel_path=image_rel.as_posix(),
-                    state_lines=state_lines,
+                    state_lines=state_lines_uv,
                     target_lines=target_lines,
                     sample_id=sample_id,
                     system_prompt=stageb_system_prompt,
@@ -217,7 +219,8 @@ def main() -> None:
                     "state_mode": str(state_mode),
                     "num_state_lines": len(state_lines),
                     "num_target_lines": len(target_lines),
-                    "state_lines": state_lines,
+                    "state_lines": state_lines_uv,
+                    "state_lines_float": state_lines,
                     "target_lines": target_lines,
                     "target_lines_quantized": target_lines_quantized,
                     "target_lines_float": target_lines_float,

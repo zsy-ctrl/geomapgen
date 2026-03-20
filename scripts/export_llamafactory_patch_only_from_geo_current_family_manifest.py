@@ -10,6 +10,7 @@ from geo_current_dataset_v1_common import (
     build_patch_image,
     build_patch_only_record,
     build_patch_target_lines,
+    build_patch_target_lines_quantized,
     build_patch_target_lines_float,
     ensure_dir,
     family_global_lines,
@@ -82,6 +83,7 @@ def export_split(
                 boundary_tol_px=float(boundary_tol_px),
             )
             target_lines = build_patch_target_lines(full_segments, patch=patch)
+            target_lines_quantized = build_patch_target_lines_quantized(full_segments, patch=patch)
             target_lines_float = build_patch_target_lines_float(full_segments, patch=patch)
             image_rel = Path("images") / split / str(family["family_id"]) / f"p{patch_id:04d}.png"
             out_image = output_root / image_rel
@@ -112,6 +114,7 @@ def export_split(
                     "mask_pixels": int(patch.get("mask_pixels", 0)),
                     "num_target_lines": len(target_lines),
                     "target_lines": target_lines,
+                    "target_lines_quantized": target_lines_quantized,
                     "target_lines_float": target_lines_float,
                 }
             )

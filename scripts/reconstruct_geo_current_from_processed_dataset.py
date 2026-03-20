@@ -8,7 +8,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 from rasterio import open as rasterio_open
 
-from geo_current_dataset_v1_common import load_jsonl
+from geo_current_dataset_v1_common import load_jsonl, uv_lines_to_local
 
 
 def ensure_dir(path: Path) -> None:
@@ -246,7 +246,9 @@ def main() -> None:
                 patch_img = np.transpose(patch, (1, 2, 0)).astype(np.uint8)
             canvas[y0:y1, x0:x1] = patch_img[: y1 - y0, : x1 - x0]
 
-            export_lines = row.get("target_lines_float", row.get("target_lines", []))
+            export_lines = row.get("target_lines_float", [])
+            if not export_lines:
+                export_lines = uv_lines_to_local(row.get("target_lines", []), patch=row)
             for line in export_lines:
                 points = line.get("points", [])
                 if not isinstance(points, list) or len(points) < 2:
@@ -299,7 +301,9 @@ def main() -> None:
                         lane_features.append(feature)
 
             patch_visual_lines: List[Dict] = []
-            visual_quantized_source = row.get("target_lines_quantized", row.get("target_lines", []))
+            visual_quantized_source = row.get("target_lines_quantized", [])
+            if not visual_quantized_source:
+                visual_quantized_source = uv_lines_to_local(row.get("target_lines", []), patch=row)
             for line in visual_quantized_source:
                 points = line.get("points", [])
                 if not isinstance(points, list) or len(points) < 2:
@@ -319,7 +323,10 @@ def main() -> None:
             visual_lines.extend(annotate_patch_endpoint_order_labels(patch_visual_lines))
 
             patch_visual_lines_float: List[Dict] = []
-            for line in row.get("target_lines_float", []):
+            float_source = row.get("target_lines_float", [])
+            if not float_source:
+                float_source = uv_lines_to_local(row.get("target_lines", []), patch=row)
+            for line in float_source:
                 points = line.get("points", [])
                 if not isinstance(points, list) or len(points) < 2:
                     continue

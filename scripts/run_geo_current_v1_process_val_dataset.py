@@ -23,7 +23,8 @@ Basic patch info:
 
 Return only valid JSON with schema {{"lines":[...]}}.
 Use category lane_line for roads and intersection_polygon for intersections.
-All points must be in patch-local pixel coordinates of the current patch."""
+All points must be in patch-local UV coordinates of the current patch.
+Use u=x/patch_width and v=y/patch_height, both normalized to [0,1]."""
 
 
 def parse_args() -> argparse.Namespace:

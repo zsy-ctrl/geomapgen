@@ -37,7 +37,8 @@ DEFAULT_STAGEA_SYSTEM_PROMPT = (
     "You are a road-structure reconstruction assistant for satellite-image patches.\n"
     "Predict the complete patch-local line map from the current image.\n"
     "The output JSON schema is {\"lines\": [...]}.\n"
-    "Each line must stay in patch-local pixel coordinates.\n"
+    "Each line must stay in patch-local UV coordinates.\n"
+    "Use u=x/patch_width and v=y/patch_height, both normalized to [0,1].\n"
     "Use category lane_line for roads and intersection_polygon for intersections.\n"
     "Return only valid JSON and no extra text."
 )
@@ -53,7 +54,8 @@ DEFAULT_STAGEB_SYSTEM_PROMPT = (
     "The previous state contains cut traces from already processed neighboring patches.\n"
     "Preserve cross-patch continuity whenever those traces enter the current patch.\n"
     "The output JSON schema is {\"lines\": [...]}.\n"
-    "Each line must stay in patch-local pixel coordinates.\n"
+    "Each line must stay in patch-local UV coordinates.\n"
+    "Use u=x/patch_width and v=y/patch_height, both normalized to [0,1].\n"
     "Use category lane_line for roads and intersection_polygon for intersections.\n"
     "Return only valid JSON and no markdown fences."
 )
@@ -387,6 +389,135 @@ def clamp_points_float(points_xy: np.ndarray, patch_size: int) -> np.ndarray:
     arr[:, 0] = np.clip(arr[:, 0], 0.0, upper)
     arr[:, 1] = np.clip(arr[:, 1], 0.0, upper)
     return arr.astype(np.float32)
+
+
+def clamp_points_float_rect(points_xy: np.ndarray, patch_width: float, patch_height: float) -> np.ndarray:
+    arr = np.asarray(points_xy, dtype=np.float32).copy()
+    if arr.ndim != 2 or arr.shape[1] != 2:
+        return np.zeros((0, 2), dtype=np.float32)
+    arr[:, 0] = np.clip(arr[:, 0], 0.0, max(0.0, float(patch_width)))
+    arr[:, 1] = np.clip(arr[:, 1], 0.0, max(0.0, float(patch_height)))
+    return arr.astype(np.float32)
+
+
+def patch_local_size(patch: Dict) -> Tuple[float, float]:
+    crop_box = patch["crop_box"]
+    return (
+        float(crop_box["x_max"] - crop_box["x_min"]),
+        float(crop_box["y_max"] - crop_box["y_min"]),
+    )
+
+
+def local_points_to_uv(points_xy: np.ndarray, patch: Dict) -> np.ndarray:
+    arr = np.asarray(points_xy, dtype=np.float32)
+    if arr.ndim != 2 or arr.shape[1] != 2:
+        return np.zeros((0, 2), dtype=np.float32)
+    patch_width, patch_height = patch_local_size(patch)
+    denom_x = max(1e-6, float(patch_width))
+    denom_y = max(1e-6, float(patch_height))
+    uv = np.empty_like(arr, dtype=np.float32)
+    uv[:, 0] = arr[:, 0] / denom_x
+    uv[:, 1] = arr[:, 1] / denom_y
+    uv[:, 0] = np.clip(uv[:, 0], 0.0, 1.0)
+    uv[:, 1] = np.clip(uv[:, 1], 0.0, 1.0)
+    return uv.astype(np.float32)
+
+
+def uv_points_to_local(points_uv: np.ndarray, patch: Dict) -> np.ndarray:
+    arr = np.asarray(points_uv, dtype=np.float32)
+    if arr.ndim != 2 or arr.shape[1] != 2:
+        return np.zeros((0, 2), dtype=np.float32)
+    patch_width, patch_height = patch_local_size(patch)
+    uv = arr.copy()
+    uv[:, 0] = np.clip(uv[:, 0], 0.0, 1.0)
+    uv[:, 1] = np.clip(uv[:, 1], 0.0, 1.0)
+    local = np.empty_like(uv, dtype=np.float32)
+    local[:, 0] = uv[:, 0] * float(patch_width)
+    local[:, 1] = uv[:, 1] * float(patch_height)
+    return local.astype(np.float32)
+
+
+def local_lines_to_uv(lines: Sequence[Dict], patch: Dict) -> List[Dict]:
+    out: List[Dict] = []
+    for line in lines:
+        arr = np.asarray(line.get("points", []), dtype=np.float32)
+        if arr.ndim != 2 or arr.shape[1] != 2:
+            continue
+        uv = local_points_to_uv(arr, patch=patch)
+        if str(line.get("geometry_type", "line")) == "polygon":
+            uv = ensure_closed_ring(uv)
+            if uv.ndim != 2 or uv.shape[0] < 4:
+                continue
+        else:
+            uv = dedup_points(uv)
+            if uv.ndim != 2 or uv.shape[0] < 2:
+                continue
+        copied = dict(line)
+        copied["points"] = [[float(x), float(y)] for x, y in uv.tolist()]
+        copied["coord_system"] = "uv"
+        out.append(copied)
+    return sort_lines(out)
+
+
+def uv_lines_to_local(lines: Sequence[Dict], patch: Dict) -> List[Dict]:
+    out: List[Dict] = []
+    for line in lines:
+        arr = np.asarray(line.get("points", []), dtype=np.float32)
+        if arr.ndim != 2 or arr.shape[1] != 2:
+            continue
+        local = uv_points_to_local(arr, patch=patch)
+        if str(line.get("geometry_type", "line")) == "polygon":
+            local = ensure_closed_ring(local)
+            if local.ndim != 2 or local.shape[0] < 4:
+                continue
+        else:
+            local = dedup_points(local)
+            if local.ndim != 2 or local.shape[0] < 2:
+                continue
+        copied = dict(line)
+        copied["points"] = [[float(x), float(y)] for x, y in local.tolist()]
+        copied["coord_system"] = "pixel_local"
+        out.append(copied)
+    return sort_lines(out)
+
+
+def sanitize_pred_lines_uv(pred_lines: Sequence[Dict]) -> List[Dict]:
+    out: List[Dict] = []
+    for line in pred_lines:
+        arr = np.asarray(line.get("points", []), dtype=np.float32)
+        if arr.ndim != 2 or arr.shape[0] < 2 or arr.shape[1] != 2:
+            continue
+        arr = arr.copy()
+        arr[:, 0] = np.clip(arr[:, 0], 0.0, 1.0)
+        arr[:, 1] = np.clip(arr[:, 1], 0.0, 1.0)
+        geometry_type = str(line.get("geometry_type", "line"))
+        if geometry_type == "polygon":
+            arr = ensure_closed_ring(dedup_points(arr))
+            if arr.ndim != 2 or arr.shape[0] < 4:
+                continue
+            start_type = "closed"
+            end_type = "closed"
+        else:
+            arr = dedup_points(arr)
+            if arr.ndim != 2 or arr.shape[0] < 2:
+                continue
+            start_type = str(line.get("start_type", "start"))
+            end_type = str(line.get("end_type", "end"))
+            if start_type not in {"start", "cut"}:
+                start_type = "start"
+            if end_type not in {"end", "cut"}:
+                end_type = "end"
+        out.append(
+            {
+                "category": str(line.get("category", "lane_line")),
+                "start_type": start_type,
+                "end_type": end_type,
+                "geometry_type": geometry_type,
+                "coord_system": "uv",
+                "points": [[float(x), float(y)] for x, y in arr.tolist()],
+            }
+        )
+    return sort_lines(out)
 
 
 def resample_polyline_preserve_remainder(
@@ -1337,14 +1468,14 @@ def build_patch_target_lines_quantized(patch_segments_global: Sequence[Dict], pa
     return sort_lines(out)
 
 
-def build_patch_target_lines(patch_segments_global: Sequence[Dict], patch: Dict) -> List[Dict]:
+def build_patch_target_lines_float(patch_segments_global: Sequence[Dict], patch: Dict) -> List[Dict]:
     crop_box = patch["crop_box"]
     offset = np.asarray([crop_box["x_min"], crop_box["y_min"]], dtype=np.float32)[None, :]
-    patch_size = int(crop_box["x_max"] - crop_box["x_min"])
+    patch_width, patch_height = patch_local_size(patch)
     out: List[Dict] = []
     for segment in patch_segments_global:
         local = np.asarray(segment["points_global"], dtype=np.float32) - offset
-        local = clamp_points_float(local, patch_size=patch_size)
+        local = clamp_points_float_rect(local, patch_width=patch_width, patch_height=patch_height)
         if str(segment.get("geometry_type", "line")) == "polygon":
             local = ensure_closed_ring(local)
             if local.ndim != 2 or local.shape[0] < 4:
@@ -1359,13 +1490,17 @@ def build_patch_target_lines(patch_segments_global: Sequence[Dict], patch: Dict)
                 "end_type": str(segment["end_type"]),
                 "geometry_type": str(segment.get("geometry_type", "line")),
                 "points": [[float(x), float(y)] for x, y in local.tolist()],
+                "coord_system": "pixel_local",
             }
         )
     return sort_lines(out)
 
 
-def build_patch_target_lines_float(patch_segments_global: Sequence[Dict], patch: Dict) -> List[Dict]:
-    return build_patch_target_lines(patch_segments_global=patch_segments_global, patch=patch)
+def build_patch_target_lines(patch_segments_global: Sequence[Dict], patch: Dict) -> List[Dict]:
+    return local_lines_to_uv(
+        build_patch_target_lines_float(patch_segments_global=patch_segments_global, patch=patch),
+        patch=patch,
+    )
 
 
 def build_manifest_for_dataset(
@@ -1839,6 +1974,8 @@ def local_lines_to_global(pred_lines: Sequence[Dict], patch: Dict) -> List[Dict]
         arr = np.asarray(line.get("points", []), dtype=np.float32)
         if arr.ndim != 2 or arr.shape[0] < 2:
             continue
+        if str(line.get("coord_system", "")).strip().lower() == "uv":
+            arr = uv_points_to_local(arr, patch=patch)
         out.append(
             {
                 "category": str(line.get("category", "lane_line")),

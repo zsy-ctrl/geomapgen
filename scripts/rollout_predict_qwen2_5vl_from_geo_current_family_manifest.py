@@ -11,23 +11,26 @@ from peft import PeftModel
 from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 
 from geo_current_dataset_v1_common import (
-    PATCH_ONLY_PROMPT_TEMPLATE,
-    PATCH_ONLY_SYSTEM_PROMPT,
-    STAGE_B_PROMPT_TEMPLATE,
-    STAGE_B_SYSTEM_PROMPT,
+    DEFAULT_STAGEA_PROMPT_TEMPLATE,
+    DEFAULT_STAGEA_SYSTEM_PROMPT,
+    DEFAULT_STAGEB_PROMPT_TEMPLATE,
+    DEFAULT_STAGEB_SYSTEM_PROMPT,
     apply_state_mode,
     build_full_segments_for_patch,
     build_owned_segments_by_patch,
     build_patch_image,
     build_patch_target_lines,
+    build_patch_target_lines_float,
     ensure_dir,
     extract_state_lines,
     family_global_lines,
+    local_lines_to_uv,
     load_family_raster_and_mask,
     load_jsonl,
     local_lines_to_global,
     parse_generated_json,
-    sanitize_pred_lines,
+    sanitize_pred_lines_uv,
+    uv_lines_to_local,
 )
 
 
@@ -106,9 +109,9 @@ def build_conversation(prompt_text: str, system_text: str, image_ref: str) -> Li
 
 def build_prompt_and_system(state_lines: Sequence[Dict], use_patch_only_prompt_when_empty: bool) -> Tuple[str, str]:
     if len(state_lines) == 0 and bool(use_patch_only_prompt_when_empty):
-        return PATCH_ONLY_PROMPT_TEMPLATE, PATCH_ONLY_SYSTEM_PROMPT
+        return DEFAULT_STAGEA_PROMPT_TEMPLATE, DEFAULT_STAGEA_SYSTEM_PROMPT
     state_json = json.dumps({"lines": list(state_lines)}, ensure_ascii=False, separators=(",", ":"))
-    return STAGE_B_PROMPT_TEMPLATE.format(state_json=state_json), STAGE_B_SYSTEM_PROMPT
+    return DEFAULT_STAGEB_PROMPT_TEMPLATE.format(state_json=state_json), DEFAULT_STAGEB_SYSTEM_PROMPT
 
 
 def generate_with_custom_engine(
@@ -329,7 +332,7 @@ def main() -> None:
                 resample_step_px=float(args.resample_step_px),
                 boundary_tol_px=float(args.boundary_tol_px),
             )
-            gt_lines = build_patch_target_lines(gt_segments, patch=patch)
+            gt_lines = build_patch_target_lines_float(gt_segments, patch=patch)
             raw_state_lines = extract_state_lines(
                 patch=patch,
                 family=family,
@@ -348,8 +351,9 @@ def main() -> None:
                 state_truncate_prob=float(args.state_truncate_prob),
                 rng=np.random.default_rng(seed=patch_id),
             )
+            state_lines_uv = local_lines_to_uv(state_lines, patch=patch)
             prompt_text, system_text = build_prompt_and_system(
-                state_lines=state_lines,
+                state_lines=state_lines_uv,
                 use_patch_only_prompt_when_empty=bool(args.use_patch_only_prompt_when_empty),
             )
             image_ref = f"{family['family_id']}_p{patch_id:04d}.png"
@@ -379,7 +383,8 @@ def main() -> None:
                 )
                 pred_text = responses[0].response_text if responses else ""
             pred_obj, cleaned_pred = parse_generated_json(pred_text)
-            pred_lines = sanitize_pred_lines(list((pred_obj or {"lines": []}).get("lines", [])), patch_size=patch_size)
+            pred_lines_uv = sanitize_pred_lines_uv(list((pred_obj or {"lines": []}).get("lines", [])))
+            pred_lines = uv_lines_to_local(pred_lines_uv, patch=patch)
             pred_global_lines = local_lines_to_global(pred_lines, patch=patch)
             pred_owned_segments_by_patch.update(
                 build_owned_segments_by_patch(
@@ -394,11 +399,13 @@ def main() -> None:
             record = {
                 "patch_id": patch_id,
                 "prompt_text": prompt_text,
-                "state_lines": state_lines,
+                "state_lines": state_lines_uv,
+                "state_lines_float": state_lines,
                 "raw_state_lines": raw_state_lines,
                 "pred_text": pred_text,
                 "pred_json_text": cleaned_pred,
-                "pred_lines": pred_lines,
+                "pred_lines": pred_lines_uv,
+                "pred_lines_float": pred_lines,
                 "gt_lines": gt_lines,
                 "parse_ok": pred_obj is not None,
                 "metrics": metrics,
