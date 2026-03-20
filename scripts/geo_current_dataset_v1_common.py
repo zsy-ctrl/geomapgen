@@ -16,6 +16,7 @@ if str(SCRIPT_DIR) not in sys.path:
 
 from export_llamafactory_patch_only_from_raw_family_manifest import (
     canonicalize_line_direction,
+    clamp_points,
     clip_polyline_to_rect,
     dedup_points,
     point_boundary_side,
@@ -378,6 +379,55 @@ def _compute_keep_bbox(
     )
 
 
+def clamp_points_float(points_xy: np.ndarray, patch_size: int) -> np.ndarray:
+    arr = np.asarray(points_xy, dtype=np.float32).copy()
+    if arr.ndim != 2 or arr.shape[1] != 2:
+        return np.zeros((0, 2), dtype=np.float32)
+    upper = max(0.0, float(patch_size))
+    arr[:, 0] = np.clip(arr[:, 0], 0.0, upper)
+    arr[:, 1] = np.clip(arr[:, 1], 0.0, upper)
+    return arr.astype(np.float32)
+
+
+def resample_polyline_preserve_remainder(
+    points_xy: np.ndarray,
+    step_px: float,
+    max_points: Optional[int] = None,
+) -> np.ndarray:
+    pts = dedup_points(np.asarray(points_xy, dtype=np.float32))
+    if pts.ndim != 2 or pts.shape[0] < 2:
+        return pts.astype(np.float32)
+    step = float(step_px)
+    if step <= 0.0:
+        return pts.astype(np.float32)
+    seg = np.linalg.norm(pts[1:] - pts[:-1], axis=1)
+    total = float(np.sum(seg))
+    if total < 1e-6:
+        return pts[:1].astype(np.float32)
+    cum = np.concatenate(([0.0], np.cumsum(seg)))
+    targets: List[float] = [0.0]
+    dist = float(step)
+    while dist < total:
+        targets.append(float(dist))
+        dist += float(step)
+    if targets[-1] != float(total):
+        targets.append(float(total))
+    if max_points is not None and int(max_points) > 0 and len(targets) > int(max_points):
+        targets = targets[: max(1, int(max_points) - 1)] + [float(total)]
+    sampled: List[np.ndarray] = []
+    for target in targets:
+        if target >= total:
+            sampled.append(pts[-1].astype(np.float32))
+            continue
+        seg_idx = int(np.searchsorted(cum, target, side="right") - 1)
+        seg_idx = min(max(seg_idx, 0), len(seg) - 1)
+        t0 = float(cum[seg_idx])
+        t1 = float(cum[seg_idx + 1])
+        ratio = 0.0 if t1 <= t0 else (float(target) - t0) / (t1 - t0)
+        sampled.append((pts[seg_idx] * (1.0 - ratio) + pts[seg_idx + 1] * ratio).astype(np.float32))
+    return dedup_points(sampled).astype(np.float32)
+
+
 def _point_in_polygon(point_xy: np.ndarray, ring_xy: np.ndarray) -> bool:
     point = np.asarray(point_xy, dtype=np.float32)
     ring = ensure_closed_ring(np.asarray(ring_xy, dtype=np.float32))
@@ -427,6 +477,309 @@ def _nearest_point_on_ring_boundary(point_xy: np.ndarray, ring_xy: np.ndarray) -
             best_point = nearest.astype(np.float32)
             best_dist = float(dist)
     return best_point, float(best_dist)
+
+
+def _polygon_contains_any(point_xy: np.ndarray, polygon_rings_xy: Sequence[np.ndarray]) -> bool:
+    point = np.asarray(point_xy, dtype=np.float32)
+    for ring in polygon_rings_xy:
+        ring_arr = ensure_closed_ring(np.asarray(ring, dtype=np.float32))
+        if ring_arr.ndim != 2 or ring_arr.shape[0] < 4:
+            continue
+        if _point_in_polygon(point, ring_arr):
+            return True
+    return False
+
+
+def _nearest_point_on_any_ring(point_xy: np.ndarray, polygon_rings_xy: Sequence[np.ndarray]) -> Tuple[Optional[np.ndarray], float]:
+    best_point: Optional[np.ndarray] = None
+    best_dist = float("inf")
+    for ring in polygon_rings_xy:
+        candidate, dist = _nearest_point_on_ring_boundary(point_xy=point_xy, ring_xy=ring)
+        if candidate is None:
+            continue
+        if float(dist) < float(best_dist):
+            best_point = candidate.astype(np.float32)
+            best_dist = float(dist)
+    return best_point, float(best_dist)
+
+
+def _nearest_point_on_polyline(point_xy: np.ndarray, points_xy: np.ndarray) -> Tuple[Optional[np.ndarray], float, int]:
+    pts = np.asarray(points_xy, dtype=np.float32)
+    if pts.ndim != 2 or pts.shape[0] < 2:
+        return None, float("inf"), -1
+    best_point: Optional[np.ndarray] = None
+    best_dist = float("inf")
+    best_seg_idx = -1
+    for seg_idx in range(pts.shape[0] - 1):
+        candidate, dist = _nearest_point_on_segment(point_xy=point_xy, start_xy=pts[seg_idx], end_xy=pts[seg_idx + 1])
+        if float(dist) < float(best_dist):
+            best_point = candidate.astype(np.float32)
+            best_dist = float(dist)
+            best_seg_idx = int(seg_idx)
+    return best_point, float(best_dist), int(best_seg_idx)
+
+
+def _insert_point_into_polyline(points_xy: np.ndarray, point_xy: np.ndarray, seg_idx: int, eps: float = 1e-3) -> np.ndarray:
+    pts = np.asarray(points_xy, dtype=np.float32)
+    point = np.asarray(point_xy, dtype=np.float32)
+    if pts.ndim != 2 or pts.shape[0] < 2:
+        return pts.astype(np.float32)
+    for idx in range(pts.shape[0]):
+        if float(np.linalg.norm(pts[idx] - point)) <= float(eps):
+            pts[idx] = point.astype(np.float32)
+            return dedup_points(pts).astype(np.float32)
+    insert_after = min(max(int(seg_idx), 0), pts.shape[0] - 2)
+    merged = np.concatenate(
+        [
+            pts[: insert_after + 1],
+            point.astype(np.float32)[None, :],
+            pts[insert_after + 1 :],
+        ],
+        axis=0,
+    )
+    return dedup_points(merged).astype(np.float32)
+
+
+def _cluster_endpoint_refs(
+    endpoint_refs: Sequence[Dict],
+    tol_px: float,
+) -> List[List[Dict]]:
+    refs = list(endpoint_refs)
+    clusters: List[List[Dict]] = []
+    visited = [False] * len(refs)
+    for start_idx in range(len(refs)):
+        if visited[start_idx]:
+            continue
+        queue = [start_idx]
+        visited[start_idx] = True
+        cluster_indices: List[int] = []
+        while queue:
+            idx = queue.pop()
+            cluster_indices.append(idx)
+            point_a = np.asarray(refs[idx]["point"], dtype=np.float32)
+            for other_idx in range(len(refs)):
+                if visited[other_idx]:
+                    continue
+                point_b = np.asarray(refs[other_idx]["point"], dtype=np.float32)
+                if float(np.linalg.norm(point_a - point_b)) <= float(tol_px):
+                    visited[other_idx] = True
+                    queue.append(other_idx)
+        clusters.append([refs[idx] for idx in cluster_indices])
+    return clusters
+
+
+def enforce_line_and_polygon_topology(
+    segments: Sequence[Dict],
+    polygon_rings_xy: Sequence[np.ndarray],
+    snap_tol_px: float,
+) -> List[Dict]:
+    tol = max(0.0, float(snap_tol_px))
+    if tol <= 0.0:
+        return [dict(segment) for segment in segments]
+
+    line_segments: List[Dict] = []
+    polygon_segments: List[Dict] = []
+    for segment in segments:
+        copied = dict(segment)
+        copied["points_global"] = np.asarray(segment["points_global"], dtype=np.float32).copy()
+        if str(segment.get("geometry_type", "line")) == "polygon":
+            polygon_segments.append(copied)
+        else:
+            line_segments.append(copied)
+    if not line_segments:
+        return [*polygon_segments]
+
+    # Step 1: snap all line endpoints to polygon boundaries first.
+    for segment in line_segments:
+        snapped = snap_line_endpoints_to_polygon_boundaries(
+            line_points_xy=np.asarray(segment["points_global"], dtype=np.float32),
+            polygon_rings_xy=polygon_rings_xy,
+            snap_tol_px=tol,
+        )
+        segment["points_global"] = dedup_points(snapped).astype(np.float32)
+
+    # Step 2: cluster nearby line endpoints so touching lines share exactly the same endpoint.
+    endpoint_refs: List[Dict] = []
+    for line_idx, segment in enumerate(line_segments):
+        pts = np.asarray(segment["points_global"], dtype=np.float32)
+        if pts.ndim != 2 or pts.shape[0] < 2:
+            continue
+        endpoint_refs.append({"line_idx": int(line_idx), "endpoint_idx": 0, "point": pts[0].astype(np.float32)})
+        endpoint_refs.append({"line_idx": int(line_idx), "endpoint_idx": -1, "point": pts[-1].astype(np.float32)})
+    for cluster in _cluster_endpoint_refs(endpoint_refs=endpoint_refs, tol_px=tol):
+        if len(cluster) <= 1:
+            continue
+        unique_line_indices = {int(ref["line_idx"]) for ref in cluster}
+        if len(unique_line_indices) <= 1:
+            continue
+        polygon_anchor: Optional[np.ndarray] = None
+        polygon_anchor_dist = float("inf")
+        for ref in cluster:
+            candidate, dist = _nearest_point_on_any_ring(point_xy=np.asarray(ref["point"], dtype=np.float32), polygon_rings_xy=polygon_rings_xy)
+            if candidate is not None and float(dist) <= float(tol) and float(dist) < float(polygon_anchor_dist):
+                polygon_anchor = candidate.astype(np.float32)
+                polygon_anchor_dist = float(dist)
+        if polygon_anchor is not None:
+            anchor = polygon_anchor.astype(np.float32)
+        else:
+            best_ref = min(
+                cluster,
+                key=lambda ref: sum(
+                    float(
+                        np.linalg.norm(
+                            np.asarray(ref["point"], dtype=np.float32) - np.asarray(other["point"], dtype=np.float32)
+                        )
+                    )
+                    for other in cluster
+                ),
+            )
+            anchor = np.asarray(best_ref["point"], dtype=np.float32)
+        for ref in cluster:
+            pts = np.asarray(line_segments[int(ref["line_idx"])]["points_global"], dtype=np.float32).copy()
+            endpoint_idx = 0 if int(ref["endpoint_idx"]) == 0 else -1
+            pts[endpoint_idx] = anchor.astype(np.float32)
+            line_segments[int(ref["line_idx"])]["points_global"] = dedup_points(pts).astype(np.float32)
+
+    # Step 3: snap line endpoints to nearby line interiors and insert shared vertices on host lines.
+    for line_idx, segment in enumerate(line_segments):
+        pts = np.asarray(segment["points_global"], dtype=np.float32).copy()
+        if pts.ndim != 2 or pts.shape[0] < 2:
+            continue
+        for endpoint_idx in (0, -1):
+            endpoint = pts[endpoint_idx].astype(np.float32)
+            best_line_idx = -1
+            best_anchor: Optional[np.ndarray] = None
+            best_dist = float("inf")
+            best_seg_idx = -1
+            for other_idx, other_segment in enumerate(line_segments):
+                if int(other_idx) == int(line_idx):
+                    continue
+                other_pts = np.asarray(other_segment["points_global"], dtype=np.float32)
+                if other_pts.ndim != 2 or other_pts.shape[0] < 2:
+                    continue
+                nearest, dist, seg_idx = _nearest_point_on_polyline(endpoint, other_pts)
+                if nearest is None:
+                    continue
+                if float(dist) <= float(tol) and float(dist) < float(best_dist):
+                    best_line_idx = int(other_idx)
+                    best_anchor = nearest.astype(np.float32)
+                    best_dist = float(dist)
+                    best_seg_idx = int(seg_idx)
+            if best_anchor is None:
+                continue
+            pts[endpoint_idx] = best_anchor.astype(np.float32)
+            pts = dedup_points(pts).astype(np.float32)
+            host_pts = np.asarray(line_segments[int(best_line_idx)]["points_global"], dtype=np.float32)
+            host_pts = _insert_point_into_polyline(
+                points_xy=host_pts,
+                point_xy=best_anchor.astype(np.float32),
+                seg_idx=int(best_seg_idx),
+                eps=max(1e-3, float(tol) * 0.25),
+            )
+            line_segments[int(best_line_idx)]["points_global"] = host_pts.astype(np.float32)
+        line_segments[int(line_idx)]["points_global"] = pts.astype(np.float32)
+
+    # Step 4: final endpoint snap to polygon boundaries after line-line adjustments.
+    finalized: List[Dict] = []
+    for segment in line_segments:
+        pts = snap_line_endpoints_to_polygon_boundaries(
+            line_points_xy=np.asarray(segment["points_global"], dtype=np.float32),
+            polygon_rings_xy=polygon_rings_xy,
+            snap_tol_px=tol,
+        )
+        pts = dedup_points(pts).astype(np.float32)
+        if pts.ndim != 2 or pts.shape[0] < 2:
+            continue
+        copied = dict(segment)
+        copied["points_global"] = pts.astype(np.float32)
+        finalized.append(copied)
+    return [*polygon_segments, *finalized]
+
+
+def _refine_polygon_transition_point(
+    point_a: np.ndarray,
+    point_b: np.ndarray,
+    inside_a: bool,
+    inside_b: bool,
+    polygon_rings_xy: Sequence[np.ndarray],
+    iterations: int = 10,
+) -> Optional[np.ndarray]:
+    if bool(inside_a) == bool(inside_b) or not polygon_rings_xy:
+        return None
+    low = np.asarray(point_a, dtype=np.float32).copy()
+    high = np.asarray(point_b, dtype=np.float32).copy()
+    low_inside = bool(inside_a)
+    for _ in range(max(1, int(iterations))):
+        mid = ((low + high) * 0.5).astype(np.float32)
+        mid_inside = _polygon_contains_any(mid, polygon_rings_xy=polygon_rings_xy)
+        if mid_inside == low_inside:
+            low = mid
+        else:
+            high = mid
+    candidate = ((low + high) * 0.5).astype(np.float32)
+    nearest, _ = _nearest_point_on_any_ring(candidate, polygon_rings_xy=polygon_rings_xy)
+    if nearest is not None:
+        return nearest.astype(np.float32)
+    return candidate.astype(np.float32)
+
+
+def clip_line_outside_polygons(
+    points_xy: np.ndarray,
+    polygon_rings_xy: Sequence[np.ndarray],
+    min_points: int = 2,
+) -> List[Dict]:
+    pts = np.asarray(points_xy, dtype=np.float32)
+    if pts.ndim != 2 or pts.shape[0] < int(min_points):
+        return []
+    valid_rings = [ensure_closed_ring(np.asarray(ring, dtype=np.float32)) for ring in polygon_rings_xy]
+    valid_rings = [ring for ring in valid_rings if ring.ndim == 2 and ring.shape[0] >= 4]
+    if not valid_rings:
+        return [{"points": pts.astype(np.float32)}]
+    dense_pts = _densify_line_for_mask(points_xy=pts, step_px=1.0)
+    outside = [not _polygon_contains_any(point_xy=point, polygon_rings_xy=valid_rings) for point in dense_pts]
+    out: List[Dict] = []
+    start = None
+    piece_points: List[np.ndarray] = []
+    for idx, flag in enumerate(outside):
+        if flag and start is None:
+            piece_points = []
+            if idx > 0:
+                transition = _refine_polygon_transition_point(
+                    point_a=dense_pts[idx - 1],
+                    point_b=dense_pts[idx],
+                    inside_a=not bool(outside[idx - 1]),
+                    inside_b=not bool(flag),
+                    polygon_rings_xy=valid_rings,
+                )
+                if transition is not None:
+                    piece_points.append(transition.astype(np.float32))
+            start = idx
+        if flag and start is not None:
+            if not piece_points or not np.allclose(piece_points[-1], dense_pts[idx], atol=1e-3):
+                piece_points.append(dense_pts[idx].astype(np.float32))
+        if (not flag) and start is not None:
+            if idx > 0:
+                transition = _refine_polygon_transition_point(
+                    point_a=dense_pts[idx - 1],
+                    point_b=dense_pts[idx],
+                    inside_a=not bool(outside[idx - 1]),
+                    inside_b=not bool(flag),
+                    polygon_rings_xy=valid_rings,
+                )
+                if transition is not None and (
+                    not piece_points or not np.allclose(piece_points[-1], transition, atol=1e-3)
+                ):
+                    piece_points.append(transition.astype(np.float32))
+            piece = np.asarray(piece_points, dtype=np.float32)
+            if piece.ndim == 2 and piece.shape[0] >= int(min_points):
+                out.append({"points": dedup_points(piece).astype(np.float32)})
+            start = None
+            piece_points = []
+    if start is not None:
+        piece = np.asarray(piece_points, dtype=np.float32)
+        if piece.ndim == 2 and piece.shape[0] >= int(min_points):
+            out.append({"points": dedup_points(piece).astype(np.float32)})
+    return out
 
 
 def snap_line_endpoints_to_polygon_boundaries(
@@ -904,43 +1257,56 @@ def build_patch_segments_global(
             line_features.append(dict(line))
 
     for line in line_features:
-        for masked_piece in mask_clip_line(line["points_global"], review_mask=review_mask, min_points=2):
-            source_points = np.asarray(masked_piece["points"], dtype=np.float32)
-            for clipped_piece in clip_polyline_to_rect(source_points, rect_global):
-                piece = np.asarray(clipped_piece, dtype=np.float32)
-                if piece.ndim != 2 or piece.shape[0] < 2:
-                    continue
-                cut_start, cut_end = _line_piece_cut_flags_after_clip(
-                    source_points=source_points,
-                    clipped_points=piece,
-                    cut_start=bool(masked_piece.get("cut_start", False)),
-                    cut_end=bool(masked_piece.get("cut_end", False)),
-                )
-                piece = resample_polyline(piece, step_px=resample_step_px)
-                piece = snap_line_endpoints_to_polygon_boundaries(
-                    line_points_xy=piece,
-                    polygon_rings_xy=clipped_polygon_rings,
-                    snap_tol_px=max(4.0, 3.0 * float(resample_step_px)),
-                )
-                if piece.ndim != 2 or piece.shape[0] < 2:
-                    continue
-                start_side = point_boundary_side(piece[0], rect_global, boundary_tol_px)
-                end_side = point_boundary_side(piece[-1], rect_global, boundary_tol_px)
-                start_type = "cut" if bool(cut_start) or start_side is not None else "start"
-                end_type = "cut" if bool(cut_end) or end_side is not None else "end"
-                piece, start_type, end_type = canonicalize_line_direction(piece, start_type=start_type, end_type=end_type)
-                out.append(
-                    {
-                        "category": str(line["category"]),
-                        "points_global": piece.astype(np.float32),
-                        "start_type": str(start_type),
-                        "end_type": str(end_type),
-                    }
-                )
-    return sort_lines(out)
+        source_points = np.asarray(line["points_global"], dtype=np.float32)
+        for clipped_piece in clip_polyline_to_rect(source_points, rect_global):
+            clipped_arr = np.asarray(clipped_piece, dtype=np.float32)
+            if clipped_arr.ndim != 2 or clipped_arr.shape[0] < 2:
+                continue
+            patch_cut_start, patch_cut_end = _line_piece_cut_flags_after_clip(
+                source_points=source_points,
+                clipped_points=clipped_arr,
+                cut_start=False,
+                cut_end=False,
+            )
+            piece = clipped_arr.astype(np.float32)
+            if piece.ndim != 2 or piece.shape[0] < 2:
+                continue
+            if float(resample_step_px) > 0.0:
+                piece = resample_polyline_preserve_remainder(piece, step_px=resample_step_px)
+            if piece.ndim != 2 or piece.shape[0] < 2:
+                continue
+            start_side = point_boundary_side(piece[0], rect_global, boundary_tol_px)
+            end_side = point_boundary_side(piece[-1], rect_global, boundary_tol_px)
+            start_type = "cut" if bool(patch_cut_start) or start_side is not None else "start"
+            end_type = "cut" if bool(patch_cut_end) or end_side is not None else "end"
+            piece, start_type, end_type = canonicalize_line_direction(piece, start_type=start_type, end_type=end_type)
+            out.append(
+                {
+                    "category": str(line["category"]),
+                    "points_global": piece.astype(np.float32),
+                    "start_type": str(start_type),
+                    "end_type": str(end_type),
+                }
+            )
+    normalized: List[Dict] = []
+    for segment in out:
+        copied = dict(segment)
+        pts = np.asarray(segment["points_global"], dtype=np.float32)
+        if str(segment.get("geometry_type", "line")) == "polygon":
+            ring = ensure_closed_ring(dedup_points(pts))
+            if ring.ndim != 2 or ring.shape[0] < 4:
+                continue
+            copied["points_global"] = ring.astype(np.float32)
+        else:
+            pts = dedup_points(pts).astype(np.float32)
+            if pts.ndim != 2 or pts.shape[0] < 2:
+                continue
+            copied["points_global"] = pts.astype(np.float32)
+        normalized.append(copied)
+    return sort_lines(normalized)
 
 
-def build_patch_target_lines(patch_segments_global: Sequence[Dict], patch: Dict) -> List[Dict]:
+def build_patch_target_lines_quantized(patch_segments_global: Sequence[Dict], patch: Dict) -> List[Dict]:
     crop_box = patch["crop_box"]
     offset = np.asarray([crop_box["x_min"], crop_box["y_min"]], dtype=np.float32)[None, :]
     patch_size = int(crop_box["x_max"] - crop_box["x_min"])
@@ -971,14 +1337,14 @@ def build_patch_target_lines(patch_segments_global: Sequence[Dict], patch: Dict)
     return sort_lines(out)
 
 
-def build_patch_target_lines_float(patch_segments_global: Sequence[Dict], patch: Dict) -> List[Dict]:
+def build_patch_target_lines(patch_segments_global: Sequence[Dict], patch: Dict) -> List[Dict]:
     crop_box = patch["crop_box"]
     offset = np.asarray([crop_box["x_min"], crop_box["y_min"]], dtype=np.float32)[None, :]
     patch_size = int(crop_box["x_max"] - crop_box["x_min"])
     out: List[Dict] = []
     for segment in patch_segments_global:
         local = np.asarray(segment["points_global"], dtype=np.float32) - offset
-        local = clamp_points(local, patch_size=patch_size)
+        local = clamp_points_float(local, patch_size=patch_size)
         if str(segment.get("geometry_type", "line")) == "polygon":
             local = ensure_closed_ring(local)
             if local.ndim != 2 or local.shape[0] < 4:
@@ -996,6 +1362,10 @@ def build_patch_target_lines_float(patch_segments_global: Sequence[Dict], patch:
             }
         )
     return sort_lines(out)
+
+
+def build_patch_target_lines_float(patch_segments_global: Sequence[Dict], patch: Dict) -> List[Dict]:
+    return build_patch_target_lines(patch_segments_global=patch_segments_global, patch=patch)
 
 
 def build_manifest_for_dataset(
@@ -1327,6 +1697,7 @@ def extract_state_lines(
                 local = np.asarray(piece, dtype=np.float32) - offset
                 if local.ndim != 2 or local.shape[0] < 2:
                     continue
+                local = clamp_points_float(local, patch_size=patch_size)
                 boundary_idx = None
                 if point_boundary_side(local[0], local_rect, boundary_tol_px) == handoff_side:
                     boundary_idx = 0
@@ -1337,8 +1708,7 @@ def extract_state_lines(
                 if boundary_idx == -1:
                     local = local[::-1].copy()
                 trace = local[: max(2, int(trace_points))]
-                trace_json = simplify_for_json(trace, patch_size=patch_size)
-                if len(trace_json) < 2:
+                if trace.ndim != 2 or trace.shape[0] < 2:
                     continue
                 out.append(
                     {
@@ -1346,13 +1716,13 @@ def extract_state_lines(
                         "category": str(segment["category"]),
                         "start_type": "cut",
                         "end_type": "cut",
-                        "points": trace_json,
+                        "points": [[float(x), float(y)] for x, y in trace.tolist()],
                     }
                 )
     seen = set()
     deduped: List[Dict] = []
     for line in sort_lines(out):
-        key = (int(line["source_patch"]), tuple((int(p[0]), int(p[1])) for p in line["points"]))
+        key = (int(line["source_patch"]), tuple((round(float(p[0]), 3), round(float(p[1]), 3)) for p in line["points"]))
         if key in seen:
             continue
         seen.add(key)
@@ -1491,13 +1861,68 @@ def apply_state_mode(
     state_truncate_prob: float,
     rng: np.random.Generator,
 ) -> List[Dict]:
-    return build_state_lines_by_mode(
-        raw_state_lines=raw_state_lines,
-        state_mode=state_mode,
-        patch_size=int(patch_size),
-        weak_trace_points=int(weak_trace_points),
-        state_line_dropout=float(state_line_dropout),
-        state_point_jitter_px=float(state_point_jitter_px),
-        state_truncate_prob=float(state_truncate_prob),
-        rng=rng,
-    )
+    if state_mode in {"empty", "no_state"}:
+        return []
+    if state_mode in {"full", "full_state"}:
+        return [dict(line) for line in raw_state_lines]
+
+    weak_lines: List[Dict] = []
+    keep_prob = 1.0 - max(0.0, min(1.0, float(state_line_dropout)))
+    max_trace_points = max(2, int(weak_trace_points))
+    truncate_prob = max(0.0, min(1.0, float(state_truncate_prob)))
+    for line in raw_state_lines:
+        if float(rng.random()) > keep_prob:
+            continue
+        arr = np.asarray(line.get("points", []), dtype=np.float32)
+        if arr.ndim != 2 or arr.shape[0] < 2:
+            continue
+        if float(rng.random()) < truncate_prob and arr.shape[0] > 2:
+            new_len = int(rng.integers(2, min(arr.shape[0], max_trace_points) + 1))
+        else:
+            new_len = min(arr.shape[0], max_trace_points)
+        truncated = arr[:new_len].astype(np.float32)
+        if float(state_point_jitter_px) > 0.0:
+            noise = rng.uniform(
+                low=-float(state_point_jitter_px),
+                high=float(state_point_jitter_px),
+                size=truncated.shape,
+            ).astype(np.float32)
+            truncated = clamp_points_float(truncated + noise, patch_size=int(patch_size))
+        if truncated.ndim != 2 or truncated.shape[0] < 2:
+            continue
+        weak_lines.append(
+            {
+                "source_patch": int(line.get("source_patch", -1)),
+                "category": str(line.get("category", "road")),
+                "start_type": str(line.get("start_type", "cut")),
+                "end_type": str(line.get("end_type", "cut")),
+                "points": [[float(x), float(y)] for x, y in truncated.tolist()],
+            }
+        )
+    if weak_lines:
+        return sort_lines(weak_lines)
+    first = next((line for line in raw_state_lines if len(line.get("points", [])) >= 2), None)
+    if first is None:
+        return []
+    arr = np.asarray(first.get("points", []), dtype=np.float32)
+    if arr.ndim != 2 or arr.shape[0] < 2:
+        return []
+    fallback = arr[: max(2, int(weak_trace_points))].astype(np.float32)
+    if float(state_point_jitter_px) > 0.0:
+        noise = rng.uniform(
+            low=-float(state_point_jitter_px),
+            high=float(state_point_jitter_px),
+            size=fallback.shape,
+        ).astype(np.float32)
+        fallback = clamp_points_float(fallback + noise, patch_size=int(patch_size))
+    if fallback.ndim != 2 or fallback.shape[0] < 2:
+        return []
+    return [
+        {
+            "source_patch": int(first.get("source_patch", -1)),
+            "category": str(first.get("category", "road")),
+            "start_type": str(first.get("start_type", "cut")),
+            "end_type": str(first.get("end_type", "cut")),
+            "points": [[float(x), float(y)] for x, y in fallback.tolist()],
+        }
+    ]

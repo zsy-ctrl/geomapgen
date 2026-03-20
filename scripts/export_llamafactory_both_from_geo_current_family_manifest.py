@@ -14,6 +14,7 @@ from geo_current_dataset_v1_common import (
     build_patch_image,
     build_patch_only_record,
     build_patch_target_lines,
+    build_patch_target_lines_quantized,
     build_patch_target_lines_float,
     build_state_record,
     ensure_dir,
@@ -123,6 +124,7 @@ def main() -> None:
             patch_id = int(patch["patch_id"])
             patch_image = build_patch_image(raw_image_hwc=raw_image_hwc, patch=patch)
             target_lines = build_patch_target_lines(owned_segments_by_patch.get(patch_id, []), patch=patch)
+            target_lines_quantized = build_patch_target_lines_quantized(owned_segments_by_patch.get(patch_id, []), patch=patch)
             target_lines_float = build_patch_target_lines_float(owned_segments_by_patch.get(patch_id, []), patch=patch)
             image_rel = Path("images") / split / str(family["family_id"]) / f"p{patch_id:04d}.png"
 
@@ -159,6 +161,7 @@ def main() -> None:
                     "mask_pixels": int(patch.get("mask_pixels", 0)),
                     "num_target_lines": len(target_lines),
                     "target_lines": target_lines,
+                    "target_lines_quantized": target_lines_quantized,
                     "target_lines_float": target_lines_float,
                 }
             )
@@ -216,6 +219,7 @@ def main() -> None:
                     "num_target_lines": len(target_lines),
                     "state_lines": state_lines,
                     "target_lines": target_lines,
+                    "target_lines_quantized": target_lines_quantized,
                     "target_lines_float": target_lines_float,
                 }
             )

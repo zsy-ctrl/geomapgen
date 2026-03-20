@@ -51,6 +51,46 @@ def build_feature_collection(features: List[Dict], crs_name: str, name: str) -> 
     }
 
 
+def _origin_sort_key(point_xy: Iterable[float]) -> Tuple[float, float, float]:
+    x = float(point_xy[0])
+    y = float(point_xy[1])
+    return (x * x + y * y, y, x)
+
+
+def annotate_patch_endpoint_order_labels(lines: List[Dict]) -> List[Dict]:
+    out: List[Dict] = []
+    endpoint_groups: Dict[str, List[Dict]] = defaultdict(list)
+    for line_idx, row in enumerate(lines):
+        copied = dict(row)
+        out.append(copied)
+        if str(copied.get("geometry_type", "line")) == "polygon":
+            continue
+        local_points = copied.get("local_points", copied.get("points", []))
+        if not isinstance(local_points, list) or len(local_points) < 2:
+            continue
+        start_type = str(copied.get("start_type", "")).strip() or "start"
+        end_type = str(copied.get("end_type", "")).strip() or "end"
+        endpoint_groups[start_type].append(
+            {
+                "line_idx": int(line_idx),
+                "label_key": "start_label",
+                "point": local_points[0],
+            }
+        )
+        endpoint_groups[end_type].append(
+            {
+                "line_idx": int(line_idx),
+                "label_key": "end_label",
+                "point": local_points[-1],
+            }
+        )
+    for endpoint_type, refs in endpoint_groups.items():
+        ordered = sorted(refs, key=lambda item: _origin_sort_key(item["point"]))
+        for rank, ref in enumerate(ordered, start=1):
+            out[int(ref["line_idx"])][str(ref["label_key"])] = f"{endpoint_type}{rank}"
+    return out
+
+
 def _line_color(category: str) -> Tuple[int, int, int]:
     if str(category) == "intersection_polygon":
         return (255, 180, 0)
@@ -110,8 +150,10 @@ def build_overlay_image(
             outline=(0, 0, 0),
         )
         if color_mode == "category":
-            draw.text((start_xy[0] + 6, start_xy[1] - 10), start_type, fill=(0, 255, 0), font=font)
-            draw.text((end_xy[0] + 6, end_xy[1] - 10), end_type, fill=(255, 80, 80), font=font)
+            start_label = str(row.get("start_label", start_type))
+            end_label = str(row.get("end_label", end_type))
+            draw.text((start_xy[0] + 6, start_xy[1] - 10), start_label, fill=(0, 255, 0), font=font)
+            draw.text((end_xy[0] + 6, end_xy[1] - 10), end_label, fill=(255, 80, 80), font=font)
     return image
 
 
@@ -256,37 +298,44 @@ def main() -> None:
                         seen_lane.add(key)
                         lane_features.append(feature)
 
-            for line in row.get("target_lines", []):
+            patch_visual_lines: List[Dict] = []
+            visual_quantized_source = row.get("target_lines_quantized", row.get("target_lines", []))
+            for line in visual_quantized_source:
                 points = line.get("points", [])
                 if not isinstance(points, list) or len(points) < 2:
                     continue
                 global_points = [[int(p[0]) + x0, int(p[1]) + y0] for p in points]
-                visual_lines.append(
+                patch_visual_lines.append(
                     {
                         "category": str(line.get("category", "")),
                         "geometry_type": str(line.get("geometry_type", "line")),
                         "start_type": str(line.get("start_type", "")),
                         "end_type": str(line.get("end_type", "")),
                         "points": global_points,
+                        "local_points": [[float(p[0]), float(p[1])] for p in points],
                         "viz_kind": "quantized",
                     }
                 )
+            visual_lines.extend(annotate_patch_endpoint_order_labels(patch_visual_lines))
 
+            patch_visual_lines_float: List[Dict] = []
             for line in row.get("target_lines_float", []):
                 points = line.get("points", [])
                 if not isinstance(points, list) or len(points) < 2:
                     continue
                 global_points = [[float(p[0]) + x0, float(p[1]) + y0] for p in points]
-                visual_lines_float.append(
+                patch_visual_lines_float.append(
                     {
                         "category": str(line.get("category", "")),
                         "geometry_type": str(line.get("geometry_type", "line")),
                         "start_type": str(line.get("start_type", "")),
                         "end_type": str(line.get("end_type", "")),
                         "points": global_points,
+                        "local_points": [[float(p[0]), float(p[1])] for p in points],
                         "viz_kind": "float",
                     }
                 )
+            visual_lines_float.extend(annotate_patch_endpoint_order_labels(patch_visual_lines_float))
 
         tif_path = sample_out / "masked_reconstructed.tif"
         overlay_path = sample_out / "masked_reconstructed_overlay.png"
