@@ -21,11 +21,9 @@ echo "[GeoCurrentV1] process shard root=$SHARD_ROOT shard=$((SHARD_INDEX + 1))/$
   --dataset-root "$DATASET_ROOT" \
   --output-manifest "$FAMILY_MANIFEST" \
   --splits $SPLITS \
-  --crop-size-px "${CROP_SIZE_PX:-896}" \
-  --base-start-px "${BASE_START_PX:-448}" \
-  --base-stride-px "${BASE_STRIDE_PX:-664}" \
-  --axis-count "${AXIS_COUNT:-5}" \
-  --family-grid-size "${FAMILY_GRID_SIZE:-4}" \
+  --tile-size-px "${TILE_SIZE_PX:-896}" \
+  --overlap-px "${OVERLAP_PX:-232}" \
+  --keep-margin-px "${KEEP_MARGIN_PX:-116}" \
   --review-crop-pad-px "${REVIEW_CROP_PAD_PX:-64}" \
   --tile-min-mask-ratio "${TILE_MIN_MASK_RATIO:-0.02}" \
   --tile-min-mask-pixels "${TILE_MIN_MASK_PIXELS:-256}" \

@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
 
 import numpy as np
+from PIL import Image, ImageDraw, ImageFont
 from rasterio import open as rasterio_open
 
 from geo_current_dataset_v1_common import load_jsonl
@@ -48,6 +49,50 @@ def build_feature_collection(features: List[Dict], crs_name: str, name: str) -> 
         },
         "features": features,
     }
+
+
+def _line_color(category: str) -> Tuple[int, int, int]:
+    if str(category) == "intersection_boundary":
+        return (255, 180, 0)
+    return (0, 255, 255)
+
+
+def build_overlay_image(
+    canvas: np.ndarray,
+    visual_lines: List[Dict],
+) -> Image.Image:
+    image = Image.fromarray(canvas, mode="RGB")
+    draw = ImageDraw.Draw(image)
+    font = ImageFont.load_default()
+
+    for row in visual_lines:
+        points = row.get("points", [])
+        if not isinstance(points, list) or len(points) < 2:
+            continue
+        color = _line_color(str(row.get("category", "")))
+        xy = [(int(pt[0]), int(pt[1])) for pt in points]
+        draw.line(xy, fill=color, width=3)
+
+        start_xy = xy[0]
+        end_xy = xy[-1]
+        start_type = str(row.get("start_type", "")).strip() or "start"
+        end_type = str(row.get("end_type", "")).strip() or "end"
+
+        start_r = 5
+        end_r = 5
+        draw.ellipse(
+            (start_xy[0] - start_r, start_xy[1] - start_r, start_xy[0] + start_r, start_xy[1] + start_r),
+            fill=(0, 255, 0),
+            outline=(0, 0, 0),
+        )
+        draw.ellipse(
+            (end_xy[0] - end_r, end_xy[1] - end_r, end_xy[0] + end_r, end_xy[1] + end_r),
+            fill=(255, 80, 80),
+            outline=(0, 0, 0),
+        )
+        draw.text((start_xy[0] + 6, start_xy[1] - 10), start_type, fill=(0, 255, 0), font=font)
+        draw.text((end_xy[0] + 6, end_xy[1] - 10), end_type, fill=(255, 80, 80), font=font)
+    return image
 
 
 def parse_args() -> argparse.Namespace:
@@ -109,6 +154,7 @@ def main() -> None:
         canvas = np.zeros((height, width, 3), dtype=np.uint8)
         lane_features: List[Dict] = []
         inter_features: List[Dict] = []
+        visual_lines: List[Dict] = []
         seen_lane = set()
         seen_inter = set()
 
@@ -160,6 +206,14 @@ def main() -> None:
                         "coordinates": pixel_to_world(global_points, transform),
                     },
                 }
+                visual_lines.append(
+                    {
+                        "category": str(line.get("category", "")),
+                        "start_type": str(line.get("start_type", "")),
+                        "end_type": str(line.get("end_type", "")),
+                        "points": global_points,
+                    }
+                )
                 if str(line.get("category", "")) == "intersection_boundary":
                     if key not in seen_inter:
                         seen_inter.add(key)
@@ -170,10 +224,12 @@ def main() -> None:
                         lane_features.append(feature)
 
         tif_path = sample_out / "masked_reconstructed.tif"
+        overlay_path = sample_out / "masked_reconstructed_overlay.png"
         out_profile = profile.copy()
         out_profile.update(count=3, dtype="uint8")
         with rasterio_open(tif_path, "w", **out_profile) as dst:
             dst.write(np.transpose(canvas, (2, 0, 1)))
+        build_overlay_image(canvas=canvas, visual_lines=visual_lines).save(overlay_path)
 
         lane_geojson = build_feature_collection(lane_features, crs_name=crs_name, name="Lane")
         inter_geojson = build_feature_collection(inter_features, crs_name=crs_name, name="IntersectionBoundary")
@@ -192,6 +248,7 @@ def main() -> None:
                 "lane_feature_count": len(lane_features),
                 "intersection_boundary_count": len(inter_features),
                 "tif_path": str(tif_path),
+                "overlay_path": str(overlay_path),
                 "lane_geojson_path": str(lane_path),
                 "intersection_geojson_path": str(inter_path),
             }
