@@ -57,9 +57,16 @@ def _line_color(category: str) -> Tuple[int, int, int]:
     return (0, 255, 255)
 
 
+def _line_color_compare(kind: str) -> Tuple[int, int, int]:
+    if str(kind) == "float":
+        return (80, 255, 80)
+    return (255, 80, 255)
+
+
 def build_overlay_image(
     canvas: np.ndarray,
     visual_lines: List[Dict],
+    color_mode: str = "category",
 ) -> Image.Image:
     image = Image.fromarray(canvas, mode="RGB")
     draw = ImageDraw.Draw(image)
@@ -69,8 +76,8 @@ def build_overlay_image(
         points = row.get("points", [])
         if not isinstance(points, list) or len(points) < 2:
             continue
-        color = _line_color(str(row.get("category", "")))
-        xy = [(int(pt[0]), int(pt[1])) for pt in points]
+        color = _line_color(str(row.get("category", ""))) if color_mode == "category" else _line_color_compare(str(row.get("viz_kind", "quantized")))
+        xy = [(int(round(pt[0])), int(round(pt[1]))) for pt in points]
         if str(row.get("geometry_type", "line")) == "polygon" and len(xy) >= 3:
             draw.polygon(xy, outline=color, width=3)
             first_xy = xy[0]
@@ -80,7 +87,8 @@ def build_overlay_image(
                 fill=(255, 180, 0),
                 outline=(0, 0, 0),
             )
-            draw.text((first_xy[0] + 6, first_xy[1] - 10), "polygon", fill=(255, 180, 0), font=font)
+            label = "polygon" if color_mode == "category" else str(row.get("viz_kind", "polygon"))
+            draw.text((first_xy[0] + 6, first_xy[1] - 10), label, fill=color, font=font)
             continue
         draw.line(xy, fill=color, width=3)
 
@@ -101,8 +109,9 @@ def build_overlay_image(
             fill=(255, 80, 80),
             outline=(0, 0, 0),
         )
-        draw.text((start_xy[0] + 6, start_xy[1] - 10), start_type, fill=(0, 255, 0), font=font)
-        draw.text((end_xy[0] + 6, end_xy[1] - 10), end_type, fill=(255, 80, 80), font=font)
+        if color_mode == "category":
+            draw.text((start_xy[0] + 6, start_xy[1] - 10), start_type, fill=(0, 255, 0), font=font)
+            draw.text((end_xy[0] + 6, end_xy[1] - 10), end_type, fill=(255, 80, 80), font=font)
     return image
 
 
@@ -166,6 +175,7 @@ def main() -> None:
         lane_features: List[Dict] = []
         inter_features: List[Dict] = []
         visual_lines: List[Dict] = []
+        visual_lines_float: List[Dict] = []
         seen_lane = set()
         seen_inter = set()
 
@@ -194,17 +204,18 @@ def main() -> None:
                 patch_img = np.transpose(patch, (1, 2, 0)).astype(np.uint8)
             canvas[y0:y1, x0:x1] = patch_img[: y1 - y0, : x1 - x0]
 
-            for line in row.get("target_lines", []):
+            export_lines = row.get("target_lines_float", row.get("target_lines", []))
+            for line in export_lines:
                 points = line.get("points", [])
                 if not isinstance(points, list) or len(points) < 2:
                     continue
-                global_points = [[int(p[0]) + x0, int(p[1]) + y0] for p in points]
+                global_points = [[float(p[0]) + x0, float(p[1]) + y0] for p in points]
                 key = (
                     str(line.get("category", "")),
                     str(line.get("geometry_type", "line")),
                     str(line.get("start_type", "")),
                     str(line.get("end_type", "")),
-                    tuple((int(p[0]), int(p[1])) for p in global_points),
+                    tuple((round(float(p[0]), 3), round(float(p[1]), 3)) for p in global_points),
                 )
                 geometry_type = str(line.get("geometry_type", "line"))
                 if str(line.get("category", "")) == "intersection_polygon":
@@ -236,15 +247,6 @@ def main() -> None:
                             "coordinates": pixel_to_world(global_points, transform),
                         },
                     }
-                visual_lines.append(
-                    {
-                        "category": str(line.get("category", "")),
-                        "geometry_type": geometry_type,
-                        "start_type": str(line.get("start_type", "")),
-                        "end_type": str(line.get("end_type", "")),
-                        "points": global_points,
-                    }
-                )
                 if str(line.get("category", "")) == "intersection_polygon":
                     if key not in seen_inter:
                         seen_inter.add(key)
@@ -254,13 +256,49 @@ def main() -> None:
                         seen_lane.add(key)
                         lane_features.append(feature)
 
+            for line in row.get("target_lines", []):
+                points = line.get("points", [])
+                if not isinstance(points, list) or len(points) < 2:
+                    continue
+                global_points = [[int(p[0]) + x0, int(p[1]) + y0] for p in points]
+                visual_lines.append(
+                    {
+                        "category": str(line.get("category", "")),
+                        "geometry_type": str(line.get("geometry_type", "line")),
+                        "start_type": str(line.get("start_type", "")),
+                        "end_type": str(line.get("end_type", "")),
+                        "points": global_points,
+                        "viz_kind": "quantized",
+                    }
+                )
+
+            for line in row.get("target_lines_float", []):
+                points = line.get("points", [])
+                if not isinstance(points, list) or len(points) < 2:
+                    continue
+                global_points = [[float(p[0]) + x0, float(p[1]) + y0] for p in points]
+                visual_lines_float.append(
+                    {
+                        "category": str(line.get("category", "")),
+                        "geometry_type": str(line.get("geometry_type", "line")),
+                        "start_type": str(line.get("start_type", "")),
+                        "end_type": str(line.get("end_type", "")),
+                        "points": global_points,
+                        "viz_kind": "float",
+                    }
+                )
+
         tif_path = sample_out / "masked_reconstructed.tif"
         overlay_path = sample_out / "masked_reconstructed_overlay.png"
+        overlay_float_path = sample_out / "masked_reconstructed_overlay_float.png"
+        overlay_compare_path = sample_out / "masked_reconstructed_overlay_compare.png"
         out_profile = profile.copy()
         out_profile.update(count=3, dtype="uint8")
         with rasterio_open(tif_path, "w", **out_profile) as dst:
             dst.write(np.transpose(canvas, (2, 0, 1)))
         build_overlay_image(canvas=canvas, visual_lines=visual_lines).save(overlay_path)
+        build_overlay_image(canvas=canvas, visual_lines=visual_lines_float, color_mode="compare").save(overlay_float_path)
+        build_overlay_image(canvas=canvas, visual_lines=[*visual_lines_float, *visual_lines], color_mode="compare").save(overlay_compare_path)
 
         lane_geojson = build_feature_collection(lane_features, crs_name=crs_name, name="Lane")
         inter_geojson = build_feature_collection(inter_features, crs_name=crs_name, name="Intersection")
@@ -280,6 +318,8 @@ def main() -> None:
                 "intersection_polygon_count": len(inter_features),
                 "tif_path": str(tif_path),
                 "overlay_path": str(overlay_path),
+                "overlay_float_path": str(overlay_float_path),
+                "overlay_compare_path": str(overlay_compare_path),
                 "lane_geojson_path": str(lane_path),
                 "intersection_geojson_path": str(inter_path),
             }

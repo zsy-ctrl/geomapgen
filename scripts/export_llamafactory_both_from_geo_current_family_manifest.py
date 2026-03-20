@@ -14,6 +14,7 @@ from geo_current_dataset_v1_common import (
     build_patch_image,
     build_patch_only_record,
     build_patch_target_lines,
+    build_patch_target_lines_float,
     build_state_record,
     ensure_dir,
     extract_state_lines,
@@ -31,7 +32,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--splits", type=str, nargs="+", default=["train", "val"])
     parser.add_argument("--band-indices", type=int, nargs="+", default=[1, 2, 3])
     parser.add_argument("--mask-threshold", type=int, default=127)
-    parser.add_argument("--resample-step-px", type=float, default=12.0)
+    parser.add_argument("--resample-step-px", type=float, default=4.0)
     parser.add_argument("--boundary-tol-px", type=float, default=2.5)
     parser.add_argument("--trace-points", type=int, default=8)
     parser.add_argument("--state-mixture-mode", type=str, default="full", choices=["full", "mixed"])
@@ -122,6 +123,7 @@ def main() -> None:
             patch_id = int(patch["patch_id"])
             patch_image = build_patch_image(raw_image_hwc=raw_image_hwc, patch=patch)
             target_lines = build_patch_target_lines(owned_segments_by_patch.get(patch_id, []), patch=patch)
+            target_lines_float = build_patch_target_lines_float(owned_segments_by_patch.get(patch_id, []), patch=patch)
             image_rel = Path("images") / split / str(family["family_id"]) / f"p{patch_id:04d}.png"
 
             out_stagea_image = stage_a_root / image_rel
@@ -157,6 +159,7 @@ def main() -> None:
                     "mask_pixels": int(patch.get("mask_pixels", 0)),
                     "num_target_lines": len(target_lines),
                     "target_lines": target_lines,
+                    "target_lines_float": target_lines_float,
                 }
             )
 
@@ -213,6 +216,7 @@ def main() -> None:
                     "num_target_lines": len(target_lines),
                     "state_lines": state_lines,
                     "target_lines": target_lines,
+                    "target_lines_float": target_lines_float,
                 }
             )
 

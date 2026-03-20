@@ -26,7 +26,7 @@ echo "[GeoCurrentV1] rollout -> $ROLLOUT_OUTPUT"
   --engine "${ENGINE:-custom}" \
   --device "cuda:0" \
   --max-new-tokens "${MAX_NEW_TOKENS:-2048}" \
-  --resample-step-px "${RESAMPLE_STEP_PX:-12.0}" \
+  --resample-step-px "${RESAMPLE_STEP_PX:-4.0}" \
   --boundary-tol-px "${BOUNDARY_TOL_PX:-2.5}" \
   --trace-points "${TRACE_POINTS:-8}" \
   --state-mode "${STATE_MODE:-full}" \

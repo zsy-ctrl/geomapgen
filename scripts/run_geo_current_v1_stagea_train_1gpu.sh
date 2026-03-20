@@ -76,7 +76,7 @@ if [[ "$EXPORT_STAGE_A_DATASET" == "1" ]]; then
     --output-root "$STAGE_A_DATASET" \
     --splits train val \
     --use-system-prompt \
-    --resample-step-px "${RESAMPLE_STEP_PX:-12.0}" \
+    --resample-step-px "${RESAMPLE_STEP_PX:-4.0}" \
     --boundary-tol-px "${BOUNDARY_TOL_PX:-2.5}"
 else
   echo "[GeoCurrentV1] reuse Stage A dataset -> $STAGE_A_DATASET"

@@ -10,6 +10,7 @@ from geo_current_dataset_v1_common import (
     build_patch_image,
     build_patch_only_record,
     build_patch_target_lines,
+    build_patch_target_lines_float,
     ensure_dir,
     family_global_lines,
     load_family_raster_and_mask,
@@ -25,7 +26,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--splits", type=str, nargs="+", default=["train", "val"])
     parser.add_argument("--band-indices", type=int, nargs="+", default=[1, 2, 3])
     parser.add_argument("--mask-threshold", type=int, default=127)
-    parser.add_argument("--resample-step-px", type=float, default=12.0)
+    parser.add_argument("--resample-step-px", type=float, default=4.0)
     parser.add_argument("--boundary-tol-px", type=float, default=2.5)
     parser.add_argument("--include-lane", action="store_true")
     parser.add_argument("--include-intersection-boundary", action="store_true")
@@ -81,6 +82,7 @@ def export_split(
                 boundary_tol_px=float(boundary_tol_px),
             )
             target_lines = build_patch_target_lines(full_segments, patch=patch)
+            target_lines_float = build_patch_target_lines_float(full_segments, patch=patch)
             image_rel = Path("images") / split / str(family["family_id"]) / f"p{patch_id:04d}.png"
             out_image = output_root / image_rel
             ensure_dir(out_image.parent)
@@ -110,6 +112,7 @@ def export_split(
                     "mask_pixels": int(patch.get("mask_pixels", 0)),
                     "num_target_lines": len(target_lines),
                     "target_lines": target_lines,
+                    "target_lines_float": target_lines_float,
                 }
             )
     count_main = write_jsonl(output_root / f"{split}.jsonl", rows)

@@ -378,6 +378,90 @@ def _compute_keep_bbox(
     )
 
 
+def _point_in_polygon(point_xy: np.ndarray, ring_xy: np.ndarray) -> bool:
+    point = np.asarray(point_xy, dtype=np.float32)
+    ring = ensure_closed_ring(np.asarray(ring_xy, dtype=np.float32))
+    if ring.ndim != 2 or ring.shape[0] < 4:
+        return False
+    x = float(point[0])
+    y = float(point[1])
+    inside = False
+    prev = ring[-1]
+    for curr in ring:
+        x1 = float(prev[0])
+        y1 = float(prev[1])
+        x2 = float(curr[0])
+        y2 = float(curr[1])
+        intersects = ((y1 > y) != (y2 > y)) and (x < (x2 - x1) * (y - y1) / max(1e-8, (y2 - y1)) + x1)
+        if intersects:
+            inside = not inside
+        prev = curr
+    return bool(inside)
+
+
+def _nearest_point_on_segment(point_xy: np.ndarray, start_xy: np.ndarray, end_xy: np.ndarray) -> Tuple[np.ndarray, float]:
+    point = np.asarray(point_xy, dtype=np.float32)
+    start = np.asarray(start_xy, dtype=np.float32)
+    end = np.asarray(end_xy, dtype=np.float32)
+    seg = end - start
+    seg_len_sq = float(np.dot(seg, seg))
+    if seg_len_sq <= 1e-8:
+        nearest = start.astype(np.float32)
+    else:
+        t = float(np.dot(point - start, seg) / seg_len_sq)
+        t = min(1.0, max(0.0, t))
+        nearest = (start + seg * t).astype(np.float32)
+    dist = float(np.linalg.norm(point - nearest))
+    return nearest, dist
+
+
+def _nearest_point_on_ring_boundary(point_xy: np.ndarray, ring_xy: np.ndarray) -> Tuple[Optional[np.ndarray], float]:
+    ring = ensure_closed_ring(np.asarray(ring_xy, dtype=np.float32))
+    if ring.ndim != 2 or ring.shape[0] < 4:
+        return None, float("inf")
+    best_point: Optional[np.ndarray] = None
+    best_dist = float("inf")
+    for idx in range(ring.shape[0] - 1):
+        nearest, dist = _nearest_point_on_segment(point_xy=point_xy, start_xy=ring[idx], end_xy=ring[idx + 1])
+        if dist < best_dist:
+            best_point = nearest.astype(np.float32)
+            best_dist = float(dist)
+    return best_point, float(best_dist)
+
+
+def snap_line_endpoints_to_polygon_boundaries(
+    line_points_xy: np.ndarray,
+    polygon_rings_xy: Sequence[np.ndarray],
+    snap_tol_px: float = 12.0,
+) -> np.ndarray:
+    pts = np.asarray(line_points_xy, dtype=np.float32).copy()
+    if pts.ndim != 2 or pts.shape[0] < 2 or not polygon_rings_xy:
+        return pts.astype(np.float32)
+    tolerance = max(0.0, float(snap_tol_px))
+    for endpoint_idx in (0, -1):
+        point = pts[endpoint_idx].astype(np.float32)
+        best_point: Optional[np.ndarray] = None
+        best_dist = float("inf")
+        point_inside_any = False
+        for ring in polygon_rings_xy:
+            ring_arr = ensure_closed_ring(np.asarray(ring, dtype=np.float32))
+            if ring_arr.ndim != 2 or ring_arr.shape[0] < 4:
+                continue
+            is_inside = _point_in_polygon(point, ring_arr)
+            nearest, dist = _nearest_point_on_ring_boundary(point, ring_arr)
+            if nearest is None:
+                continue
+            if is_inside:
+                point_inside_any = True
+            if is_inside or dist <= tolerance:
+                if dist < best_dist:
+                    best_dist = float(dist)
+                    best_point = nearest.astype(np.float32)
+        if best_point is not None and (point_inside_any or best_dist <= tolerance):
+            pts[endpoint_idx] = best_point.astype(np.float32)
+    return dedup_points(pts).astype(np.float32)
+
+
 def generate_tile_windows(
     width: int,
     height: int,
@@ -795,6 +879,8 @@ def build_patch_segments_global(
     boundary_tol_px: float,
 ) -> List[Dict]:
     out: List[Dict] = []
+    clipped_polygon_rings: List[np.ndarray] = []
+    line_features: List[Dict] = []
     for line in global_lines:
         if str(line.get("geometry_type", "line")) == "polygon":
             source_points = ensure_closed_ring(np.asarray(line["points_global"], dtype=np.float32))
@@ -804,6 +890,7 @@ def build_patch_segments_global(
                 ring = ensure_closed_ring(np.asarray(clipped_ring, dtype=np.float32))
                 if ring.ndim != 2 or ring.shape[0] < 4:
                     continue
+                clipped_polygon_rings.append(ring.astype(np.float32))
                 out.append(
                     {
                         "category": str(line["category"]),
@@ -813,7 +900,10 @@ def build_patch_segments_global(
                         "end_type": "closed",
                     }
                 )
-            continue
+        else:
+            line_features.append(dict(line))
+
+    for line in line_features:
         for masked_piece in mask_clip_line(line["points_global"], review_mask=review_mask, min_points=2):
             source_points = np.asarray(masked_piece["points"], dtype=np.float32)
             for clipped_piece in clip_polyline_to_rect(source_points, rect_global):
@@ -826,8 +916,12 @@ def build_patch_segments_global(
                     cut_start=bool(masked_piece.get("cut_start", False)),
                     cut_end=bool(masked_piece.get("cut_end", False)),
                 )
-                piece = simplify_polyline_straight(piece, tolerance_px=1.5)
                 piece = resample_polyline(piece, step_px=resample_step_px)
+                piece = snap_line_endpoints_to_polygon_boundaries(
+                    line_points_xy=piece,
+                    polygon_rings_xy=clipped_polygon_rings,
+                    snap_tol_px=max(4.0, 3.0 * float(resample_step_px)),
+                )
                 if piece.ndim != 2 or piece.shape[0] < 2:
                     continue
                 start_side = point_boundary_side(piece[0], rect_global, boundary_tol_px)
@@ -872,6 +966,33 @@ def build_patch_target_lines(patch_segments_global: Sequence[Dict], patch: Dict)
                 "end_type": str(segment["end_type"]),
                 "geometry_type": str(segment.get("geometry_type", "line")),
                 "points": points_json,
+            }
+        )
+    return sort_lines(out)
+
+
+def build_patch_target_lines_float(patch_segments_global: Sequence[Dict], patch: Dict) -> List[Dict]:
+    crop_box = patch["crop_box"]
+    offset = np.asarray([crop_box["x_min"], crop_box["y_min"]], dtype=np.float32)[None, :]
+    patch_size = int(crop_box["x_max"] - crop_box["x_min"])
+    out: List[Dict] = []
+    for segment in patch_segments_global:
+        local = np.asarray(segment["points_global"], dtype=np.float32) - offset
+        local = clamp_points(local, patch_size=patch_size)
+        if str(segment.get("geometry_type", "line")) == "polygon":
+            local = ensure_closed_ring(local)
+            if local.ndim != 2 or local.shape[0] < 4:
+                continue
+        else:
+            if local.ndim != 2 or local.shape[0] < 2:
+                continue
+        out.append(
+            {
+                "category": str(segment["category"]),
+                "start_type": str(segment["start_type"]),
+                "end_type": str(segment["end_type"]),
+                "geometry_type": str(segment.get("geometry_type", "line")),
+                "points": [[float(x), float(y)] for x, y in local.tolist()],
             }
         )
     return sort_lines(out)
@@ -981,7 +1102,6 @@ def build_manifest_for_dataset(
             col_map = {int(x0): idx for idx, x0 in enumerate(unique_xs)}
             row_map = {int(y0): idx for idx, y0 in enumerate(unique_ys)}
             patches: List[Dict] = []
-            tile_audits: List[Dict] = []
             for patch_id, window in enumerate(selected_windows):
                 x0, y0, x1, y1 = window.bbox
                 keep_x0, keep_y0, keep_x1, keep_y1 = window.keep_bbox
@@ -1009,9 +1129,20 @@ def build_manifest_for_dataset(
                     "mask_pixels": int(window.mask_pixels),
                 }
                 patches.append(patch)
+            patches = assign_family_ownership_keep_boxes(patches=patches, grid_size=max(1, len(unique_xs)))
+            tile_audits: List[Dict] = []
+            for patch in patches:
+                x0 = int(patch["crop_box"]["x_min"])
+                y0 = int(patch["crop_box"]["y_min"])
+                x1 = int(patch["crop_box"]["x_max"])
+                y1 = int(patch["crop_box"]["y_max"])
+                keep_x0 = int(patch["keep_box"]["x_min"])
+                keep_y0 = int(patch["keep_box"]["y_min"])
+                keep_x1 = int(patch["keep_box"]["x_max"])
+                keep_y1 = int(patch["keep_box"]["y_max"])
                 tile_audits.append(
                     {
-                        "candidate_index": int(patch_id),
+                        "candidate_index": int(patch["patch_id"]),
                         "selected": True,
                         "reason": "selected",
                         "bbox": [int(x0), int(y0), int(x1), int(y1)],

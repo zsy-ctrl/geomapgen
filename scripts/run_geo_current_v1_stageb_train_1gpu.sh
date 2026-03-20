@@ -84,7 +84,7 @@ if [[ "$EXPORT_STAGE_B_DATASET" == "1" ]]; then
     --output-root "$STAGE_B_DATASET" \
     --splits train val \
     --use-system-prompt \
-    --resample-step-px "${RESAMPLE_STEP_PX:-12.0}" \
+    --resample-step-px "${RESAMPLE_STEP_PX:-4.0}" \
     --boundary-tol-px "${BOUNDARY_TOL_PX:-2.5}" \
     --trace-points "${TRACE_POINTS:-8}" \
     --state-mixture-mode "${STATE_MIXTURE_MODE:-full}" \

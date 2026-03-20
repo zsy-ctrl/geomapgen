@@ -10,6 +10,7 @@ from geo_current_dataset_v1_common import (
     build_owned_segments_by_patch,
     build_patch_image,
     build_patch_target_lines,
+    build_patch_target_lines_float,
     build_state_record,
     ensure_dir,
     extract_state_lines,
@@ -28,7 +29,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--splits", type=str, nargs="+", default=["train", "val"])
     parser.add_argument("--band-indices", type=int, nargs="+", default=[1, 2, 3])
     parser.add_argument("--mask-threshold", type=int, default=127)
-    parser.add_argument("--resample-step-px", type=float, default=12.0)
+    parser.add_argument("--resample-step-px", type=float, default=4.0)
     parser.add_argument("--boundary-tol-px", type=float, default=2.5)
     parser.add_argument("--trace-points", type=int, default=8)
     parser.add_argument("--state-mixture-mode", type=str, default="full", choices=["full", "mixed"])
@@ -102,6 +103,7 @@ def export_split(
             patch_id = int(patch["patch_id"])
             patch_image = build_patch_image(raw_image_hwc=raw_image_hwc, patch=patch)
             target_lines = build_patch_target_lines(owned_segments_by_patch.get(patch_id, []), patch=patch)
+            target_lines_float = build_patch_target_lines_float(owned_segments_by_patch.get(patch_id, []), patch=patch)
             raw_state_lines = extract_state_lines(
                 patch=patch,
                 family=family,
@@ -160,6 +162,7 @@ def export_split(
                     "num_target_lines": len(target_lines),
                     "state_lines": state_lines,
                     "target_lines": target_lines,
+                    "target_lines_float": target_lines_float,
                 }
             )
     count_main = write_jsonl(output_root / f"{split}.jsonl", rows)

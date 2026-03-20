@@ -38,7 +38,7 @@ echo "[GeoCurrentV1] export shard Stage A + Stage B datasets -> $SHARD_ROOT"
   --output-root "$SHARD_ROOT" \
   --splits $SPLITS \
   --use-system-prompt \
-  --resample-step-px "${RESAMPLE_STEP_PX:-12.0}" \
+  --resample-step-px "${RESAMPLE_STEP_PX:-4.0}" \
   --boundary-tol-px "${BOUNDARY_TOL_PX:-2.5}" \
   --trace-points "${TRACE_POINTS:-8}" \
   --state-mixture-mode "${STATE_MIXTURE_MODE:-full}" \

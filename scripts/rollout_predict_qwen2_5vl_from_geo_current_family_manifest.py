@@ -50,7 +50,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--top-p", type=float, default=1.0)
     parser.add_argument("--do-sample", action="store_true")
     parser.add_argument("--precision", type=str, default="auto", choices=["auto", "fp16", "bf16", "fp32"])
-    parser.add_argument("--resample-step-px", type=float, default=12.0)
+    parser.add_argument("--resample-step-px", type=float, default=4.0)
     parser.add_argument("--boundary-tol-px", type=float, default=2.5)
     parser.add_argument("--trace-points", type=int, default=8)
     parser.add_argument("--state-mode", type=str, default="full", choices=["full", "empty", "no_state", "weak_state", "full_state"])
