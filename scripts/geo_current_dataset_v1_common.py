@@ -38,7 +38,7 @@ DEFAULT_STAGEA_SYSTEM_PROMPT = (
     "Predict the complete patch-local line map from the current image.\n"
     "The output JSON schema is {\"lines\": [...]}.\n"
     "Each line must stay in patch-local UV coordinates.\n"
-    "Use u=x/patch_width and v=y/patch_height, both normalized to [0,1].\n"
+    "Use patch-local integer UV coordinates where one pixel equals one unit.\n"
     "Use category lane_line for roads and intersection_polygon for intersections.\n"
     "Return only valid JSON and no extra text."
 )
@@ -55,7 +55,7 @@ DEFAULT_STAGEB_SYSTEM_PROMPT = (
     "Preserve cross-patch continuity whenever those traces enter the current patch.\n"
     "The output JSON schema is {\"lines\": [...]}.\n"
     "Each line must stay in patch-local UV coordinates.\n"
-    "Use u=x/patch_width and v=y/patch_height, both normalized to [0,1].\n"
+    "Use patch-local integer UV coordinates where one pixel equals one unit.\n"
     "Use category lane_line for roads and intersection_polygon for intersections.\n"
     "Return only valid JSON and no markdown fences."
 )
@@ -413,14 +413,8 @@ def local_points_to_uv(points_xy: np.ndarray, patch: Dict) -> np.ndarray:
     if arr.ndim != 2 or arr.shape[1] != 2:
         return np.zeros((0, 2), dtype=np.float32)
     patch_width, patch_height = patch_local_size(patch)
-    denom_x = max(1e-6, float(patch_width))
-    denom_y = max(1e-6, float(patch_height))
-    uv = np.empty_like(arr, dtype=np.float32)
-    uv[:, 0] = arr[:, 0] / denom_x
-    uv[:, 1] = arr[:, 1] / denom_y
-    uv[:, 0] = np.clip(uv[:, 0], 0.0, 1.0)
-    uv[:, 1] = np.clip(uv[:, 1], 0.0, 1.0)
-    return uv.astype(np.float32)
+    uv = clamp_points_float_rect(arr, patch_width=patch_width, patch_height=patch_height)
+    return np.rint(uv).astype(np.float32)
 
 
 def uv_points_to_local(points_uv: np.ndarray, patch: Dict) -> np.ndarray:
@@ -428,13 +422,7 @@ def uv_points_to_local(points_uv: np.ndarray, patch: Dict) -> np.ndarray:
     if arr.ndim != 2 or arr.shape[1] != 2:
         return np.zeros((0, 2), dtype=np.float32)
     patch_width, patch_height = patch_local_size(patch)
-    uv = arr.copy()
-    uv[:, 0] = np.clip(uv[:, 0], 0.0, 1.0)
-    uv[:, 1] = np.clip(uv[:, 1], 0.0, 1.0)
-    local = np.empty_like(uv, dtype=np.float32)
-    local[:, 0] = uv[:, 0] * float(patch_width)
-    local[:, 1] = uv[:, 1] * float(patch_height)
-    return local.astype(np.float32)
+    return clamp_points_float_rect(arr, patch_width=patch_width, patch_height=patch_height).astype(np.float32)
 
 
 def local_lines_to_uv(lines: Sequence[Dict], patch: Dict) -> List[Dict]:
@@ -453,7 +441,7 @@ def local_lines_to_uv(lines: Sequence[Dict], patch: Dict) -> List[Dict]:
             if uv.ndim != 2 or uv.shape[0] < 2:
                 continue
         copied = dict(line)
-        copied["points"] = [[float(x), float(y)] for x, y in uv.tolist()]
+        copied["points"] = [[int(round(x)), int(round(y))] for x, y in uv.tolist()]
         copied["coord_system"] = "uv"
         out.append(copied)
     return sort_lines(out)
@@ -487,18 +475,20 @@ def sanitize_pred_lines_uv(pred_lines: Sequence[Dict]) -> List[Dict]:
         arr = np.asarray(line.get("points", []), dtype=np.float32)
         if arr.ndim != 2 or arr.shape[0] < 2 or arr.shape[1] != 2:
             continue
-        arr = arr.copy()
-        arr[:, 0] = np.clip(arr[:, 0], 0.0, 1.0)
-        arr[:, 1] = np.clip(arr[:, 1], 0.0, 1.0)
         geometry_type = str(line.get("geometry_type", "line"))
         if geometry_type == "polygon":
-            arr = ensure_closed_ring(dedup_points(arr))
+            patch_size = int(max(1.0, float(np.max(arr)) + 1.0))
+            points_json = simplify_for_json(ensure_closed_ring(arr), patch_size=patch_size)
+            if len(points_json) >= 2 and points_json[0] != points_json[-1]:
+                points_json.append(list(points_json[0]))
+            arr = ensure_closed_ring(dedup_points(np.asarray(points_json, dtype=np.float32)))
             if arr.ndim != 2 or arr.shape[0] < 4:
                 continue
             start_type = "closed"
             end_type = "closed"
         else:
-            arr = dedup_points(arr)
+            patch_size = int(max(1.0, float(np.max(arr)) + 1.0))
+            arr = dedup_points(np.asarray(simplify_for_json(arr, patch_size=patch_size), dtype=np.float32))
             if arr.ndim != 2 or arr.shape[0] < 2:
                 continue
             start_type = str(line.get("start_type", "start"))
@@ -514,7 +504,7 @@ def sanitize_pred_lines_uv(pred_lines: Sequence[Dict]) -> List[Dict]:
                 "end_type": end_type,
                 "geometry_type": geometry_type,
                 "coord_system": "uv",
-                "points": [[float(x), float(y)] for x, y in arr.tolist()],
+                "points": [[int(round(x)), int(round(y))] for x, y in arr.tolist()],
             }
         )
     return sort_lines(out)
@@ -1497,10 +1487,7 @@ def build_patch_target_lines_float(patch_segments_global: Sequence[Dict], patch:
 
 
 def build_patch_target_lines(patch_segments_global: Sequence[Dict], patch: Dict) -> List[Dict]:
-    return local_lines_to_uv(
-        build_patch_target_lines_float(patch_segments_global=patch_segments_global, patch=patch),
-        patch=patch,
-    )
+    return build_patch_target_lines_quantized(patch_segments_global=patch_segments_global, patch=patch)
 
 
 def build_manifest_for_dataset(
