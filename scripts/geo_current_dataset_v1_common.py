@@ -214,6 +214,115 @@ def expand_bbox(
     )
 
 
+def build_axis_centers_for_region(
+    region_start: int,
+    region_end: int,
+    crop_size_px: int,
+    base_start_px: int,
+    base_stride_px: int,
+    axis_count: int,
+) -> List[int]:
+    crop_size_px = max(1, int(crop_size_px))
+    half = crop_size_px // 2
+    min_center = int(region_start) + half
+    max_center = int(region_end) - half
+    if max_center < min_center:
+        return []
+    anchor = int(region_start) + int(base_start_px)
+    centers = [int(anchor + int(base_stride_px) * i) for i in range(max(1, int(axis_count)))]
+    centers = [int(c) for c in centers if min_center <= int(c) <= max_center]
+    if centers:
+        return centers
+    center = int(round(0.5 * float(min_center + max_center)))
+    return [int(np.clip(center, min_center, max_center))]
+
+
+def build_family_patches_from_centers(
+    x_centers: Sequence[int],
+    y_centers: Sequence[int],
+    crop_size_px: int,
+    family_grid_size: int,
+) -> List[Dict]:
+    crop_size_px = max(1, int(crop_size_px))
+    half = crop_size_px // 2
+    x_centers = [int(x) for x in x_centers]
+    y_centers = [int(y) for y in y_centers]
+    if len(x_centers) == 0 or len(y_centers) == 0:
+        return []
+    grid_size = max(1, min(int(family_grid_size), len(x_centers), len(y_centers)))
+    families: List[Dict] = []
+    max_row0 = max(0, len(y_centers) - grid_size)
+    max_col0 = max(0, len(x_centers) - grid_size)
+    for row0 in range(max_row0 + 1):
+        for col0 in range(max_col0 + 1):
+            patches: List[Dict] = []
+            for row in range(grid_size):
+                for col in range(grid_size):
+                    center_x = int(x_centers[col0 + col])
+                    center_y = int(y_centers[row0 + row])
+                    patch_id = int(row * grid_size + col)
+                    patches.append(
+                        {
+                            "patch_id": patch_id,
+                            "row": int(row),
+                            "col": int(col),
+                            "center_x": int(center_x),
+                            "center_y": int(center_y),
+                            "crop_box": {
+                                "x_min": int(center_x - half),
+                                "y_min": int(center_y - half),
+                                "x_max": int(center_x + half),
+                                "y_max": int(center_y + half),
+                                "center_x": int(center_x),
+                                "center_y": int(center_y),
+                            },
+                        }
+                    )
+            families.append(
+                {
+                    "row0": int(row0),
+                    "col0": int(col0),
+                    "grid_size": int(grid_size),
+                    "patches": patches,
+                }
+            )
+    return families
+
+
+def assign_family_ownership_keep_boxes(patches: Sequence[Dict], grid_size: int) -> List[Dict]:
+    patch_map = {(int(patch["row"]), int(patch["col"])): patch for patch in patches}
+    out: List[Dict] = []
+    for patch in patches:
+        row = int(patch["row"])
+        col = int(patch["col"])
+        crop_box = patch["crop_box"]
+        left = float(crop_box["x_min"])
+        right = float(crop_box["x_max"])
+        top = float(crop_box["y_min"])
+        bottom = float(crop_box["y_max"])
+        if (row, col - 1) in patch_map:
+            left_neighbor = patch_map[(row, col - 1)]
+            left = 0.5 * (float(patch["center_x"]) + float(left_neighbor["center_x"]))
+        if (row, col + 1) in patch_map:
+            right_neighbor = patch_map[(row, col + 1)]
+            right = 0.5 * (float(patch["center_x"]) + float(right_neighbor["center_x"]))
+        if (row - 1, col) in patch_map:
+            top_neighbor = patch_map[(row - 1, col)]
+            top = 0.5 * (float(patch["center_y"]) + float(top_neighbor["center_y"]))
+        if (row + 1, col) in patch_map:
+            bottom_neighbor = patch_map[(row + 1, col)]
+            bottom = 0.5 * (float(patch["center_y"]) + float(bottom_neighbor["center_y"]))
+        patched = dict(patch)
+        patched["keep_box"] = {
+            "x_min": int(round(left)),
+            "y_min": int(round(top)),
+            "x_max": int(round(right)),
+            "y_max": int(round(bottom)),
+        }
+        out.append(patched)
+    return out
+
+
 def _sliding_positions(start: int, end: int, tile_size: int, limit: int, stride: int) -> List[int]:
     start = max(0, int(start))
     end = min(int(limit), int(end))
@@ -619,9 +728,11 @@ def build_manifest_for_dataset(
     lane_relpath: str,
     intersection_relpath: str,
     mask_threshold: int,
-    tile_size_px: int,
-    overlap_px: int,
-    keep_margin_px: int,
+    crop_size_px: int,
+    base_start_px: int,
+    base_stride_px: int,
+    axis_count: int,
+    family_grid_size: int,
     review_crop_pad_px: int,
     tile_min_mask_ratio: float,
     tile_min_mask_pixels: int,
@@ -676,92 +787,141 @@ def build_manifest_for_dataset(
             region_bbox = None
             if bool(search_within_review_bbox) and review_bbox is not None:
                 region_bbox = expand_bbox(review_bbox, pad_px=int(review_crop_pad_px), width=int(raster_meta.width), height=int(raster_meta.height))
-            print(f"[Manifest] split={split} sample_id={sample_id} stage=tile_windows region_bbox={region_bbox}", flush=True)
-            tile_windows = generate_tile_windows(
-                width=int(raster_meta.width),
-                height=int(raster_meta.height),
-                tile_size_px=int(tile_size_px),
-                overlap_px=int(overlap_px),
-                region_bbox=region_bbox,
-                keep_margin_px=int(keep_margin_px),
+            region = (
+                (0, 0, int(raster_meta.width), int(raster_meta.height))
+                if region_bbox is None
+                else tuple(int(v) for v in region_bbox)
             )
-            tile_windows = annotate_tile_windows_with_mask(tile_windows=tile_windows, mask=review_mask)
-            selected_windows, tile_audits = audit_tile_window_selection(
-                tile_windows=tile_windows,
-                min_mask_ratio=float(tile_min_mask_ratio),
-                min_mask_pixels=int(tile_min_mask_pixels),
-                max_tiles=None if int(tile_max_per_sample) <= 0 else int(tile_max_per_sample),
-                fallback_to_all_if_empty=bool(fallback_to_all_if_empty),
+            print(f"[Manifest] split={split} sample_id={sample_id} stage=family_grid region_bbox={region}", flush=True)
+            x_centers = build_axis_centers_for_region(
+                region_start=int(region[0]),
+                region_end=int(region[2]),
+                crop_size_px=int(crop_size_px),
+                base_start_px=int(base_start_px),
+                base_stride_px=int(base_stride_px),
+                axis_count=int(axis_count),
+            )
+            y_centers = build_axis_centers_for_region(
+                region_start=int(region[1]),
+                region_end=int(region[3]),
+                crop_size_px=int(crop_size_px),
+                base_start_px=int(base_start_px),
+                base_stride_px=int(base_stride_px),
+                axis_count=int(axis_count),
+            )
+            family_specs = build_family_patches_from_centers(
+                x_centers=x_centers,
+                y_centers=y_centers,
+                crop_size_px=int(crop_size_px),
+                family_grid_size=int(family_grid_size),
             )
             print(
-                f"[Manifest] split={split} sample_id={sample_id} stage=selected "
-                f"candidate_tiles={len(tile_windows)} selected_tiles={len(selected_windows)}",
+                f"[Manifest] split={split} sample_id={sample_id} stage=family_grid "
+                f"x_centers={len(x_centers)} y_centers={len(y_centers)} families={len(family_specs)}",
                 flush=True,
             )
-            selected_windows = sorted(selected_windows, key=lambda item: (int(item.y0), int(item.x0)))
-            y_keys = sorted({int(item.y0) for item in selected_windows})
-            x_keys = sorted({int(item.x0) for item in selected_windows})
-            row_by_y = {int(y): idx for idx, y in enumerate(y_keys)}
-            col_by_x = {int(x): idx for idx, x in enumerate(x_keys)}
-            patches: List[Dict] = []
-            for patch_id, window in enumerate(selected_windows):
-                bbox = window.bbox
-                keep_bbox = window.keep_bbox
-                patches.append(
+            if len(family_specs) == 0 and bool(fallback_to_all_if_empty):
+                fallback_region = (0, 0, int(raster_meta.width), int(raster_meta.height))
+                x_centers = build_axis_centers_for_region(
+                    region_start=int(fallback_region[0]),
+                    region_end=int(fallback_region[2]),
+                    crop_size_px=int(crop_size_px),
+                    base_start_px=int(base_start_px),
+                    base_stride_px=int(base_stride_px),
+                    axis_count=int(axis_count),
+                )
+                y_centers = build_axis_centers_for_region(
+                    region_start=int(fallback_region[1]),
+                    region_end=int(fallback_region[3]),
+                    crop_size_px=int(crop_size_px),
+                    base_start_px=int(base_start_px),
+                    base_stride_px=int(base_stride_px),
+                    axis_count=int(axis_count),
+                )
+                family_specs = build_family_patches_from_centers(
+                    x_centers=x_centers,
+                    y_centers=y_centers,
+                    crop_size_px=int(crop_size_px),
+                    family_grid_size=int(family_grid_size),
+                )
+                region = fallback_region
+            for family_spec in family_specs:
+                patches = assign_family_ownership_keep_boxes(
+                    patches=family_spec["patches"],
+                    grid_size=int(family_spec["grid_size"]),
+                )
+                tile_audits: List[Dict] = []
+                for patch in patches:
+                    crop_box = patch["crop_box"]
+                    x0 = int(crop_box["x_min"])
+                    y0 = int(crop_box["y_min"])
+                    x1 = int(crop_box["x_max"])
+                    y1 = int(crop_box["y_max"])
+                    mask_crop = review_mask[y0:y1, x0:x1] if review_mask is not None else None
+                    mask_pixels = int(mask_crop.sum()) if mask_crop is not None and mask_crop.size > 0 else 0
+                    mask_ratio = float(mask_crop.mean()) if mask_crop is not None and mask_crop.size > 0 else 0.0
+                    patch["mask_ratio"] = float(mask_ratio)
+                    patch["mask_pixels"] = int(mask_pixels)
+                    tile_audits.append(
+                        {
+                            "candidate_index": int(patch["patch_id"]),
+                            "selected": True,
+                            "reason": "selected",
+                            "bbox": [int(x0), int(y0), int(x1), int(y1)],
+                            "keep_bbox": [
+                                int(patch["keep_box"]["x_min"]),
+                                int(patch["keep_box"]["y_min"]),
+                                int(patch["keep_box"]["x_max"]),
+                                int(patch["keep_box"]["y_max"]),
+                            ],
+                            "mask_ratio": float(mask_ratio),
+                            "mask_pixels": int(mask_pixels),
+                        }
+                    )
+                split_family_count += 1
+                families.append(
                     {
-                        "patch_id": int(patch_id),
-                        "row": int(row_by_y[int(window.y0)]),
-                        "col": int(col_by_x[int(window.x0)]),
-                        "center_x": int((bbox[0] + bbox[2]) // 2),
-                        "center_y": int((bbox[1] + bbox[3]) // 2),
-                        "crop_box": {
-                            "x_min": int(bbox[0]),
-                            "y_min": int(bbox[1]),
-                            "x_max": int(bbox[2]),
-                            "y_max": int(bbox[3]),
-                            "center_x": int((bbox[0] + bbox[2]) // 2),
-                            "center_y": int((bbox[1] + bbox[3]) // 2),
+                        "family_id": f"{sample_id}__geo_current_r{int(family_spec['row0'])}_c{int(family_spec['col0'])}",
+                        "split": str(split),
+                        "source_sample_id": sample_id,
+                        "source_image": image_path.name,
+                        "source_image_path": str(image_path),
+                        "source_mask_path": str(mask_path) if mask_path.is_file() else "",
+                        "source_lane_path": str(lane_path) if lane_path.is_file() else "",
+                        "source_intersection_path": str(intersection_path) if intersection_path.is_file() else "",
+                        "image_size": [int(raster_meta.width), int(raster_meta.height)],
+                        "crop_size": int(crop_size_px),
+                        "paper_grid": {
+                            "base_start": int(base_start_px),
+                            "base_stride": int(base_stride_px),
+                            "axis_count": int(axis_count),
+                            "family_grid_size": int(family_spec["grid_size"]),
+                            "row0": int(family_spec["row0"]),
+                            "col0": int(family_spec["col0"]),
                         },
-                        "keep_box": {
-                            "x_min": int(keep_bbox[0]),
-                            "y_min": int(keep_bbox[1]),
-                            "x_max": int(keep_bbox[2]),
-                            "y_max": int(keep_bbox[3]),
+                        "tiling": {
+                            "crop_size_px": int(crop_size_px),
+                            "base_start_px": int(base_start_px),
+                            "base_stride_px": int(base_stride_px),
+                            "axis_count": int(axis_count),
+                            "family_grid_size": int(family_spec["grid_size"]),
+                            "review_crop_pad_px": int(review_crop_pad_px),
+                            "search_within_review_bbox": bool(search_within_review_bbox),
+                            "tile_min_mask_ratio": float(tile_min_mask_ratio),
+                            "tile_min_mask_pixels": int(tile_min_mask_pixels),
+                            "tile_max_per_sample": int(tile_max_per_sample),
                         },
-                        "mask_ratio": float(window.mask_ratio),
-                        "mask_pixels": int(window.mask_pixels),
+                        "crop_bbox": [int(v) for v in region],
+                        "patches": patches,
+                        "tile_audits": tile_audits,
                     }
                 )
-            families.append(
-                {
-                    "family_id": sample_id,
-                    "split": str(split),
-                    "source_sample_id": sample_id,
-                    "source_image": image_path.name,
-                    "source_image_path": str(image_path),
-                    "source_mask_path": str(mask_path) if mask_path.is_file() else "",
-                    "source_lane_path": str(lane_path) if lane_path.is_file() else "",
-                    "source_intersection_path": str(intersection_path) if intersection_path.is_file() else "",
-                    "image_size": [int(raster_meta.width), int(raster_meta.height)],
-                    "tiling": {
-                        "tile_size_px": int(tile_size_px),
-                        "overlap_px": int(overlap_px),
-                        "keep_margin_px": int(keep_margin_px),
-                        "review_crop_pad_px": int(review_crop_pad_px),
-                        "search_within_review_bbox": bool(search_within_review_bbox),
-                    },
-                    "crop_bbox": None if region_bbox is None else [int(v) for v in region_bbox],
-                    "patches": patches,
-                    "tile_audits": tile_audits,
-                }
-            )
-            split_family_count += 1
-            split_patch_count += len(patches)
-            print(
-                f"[Manifest] split={split} sample_id={sample_id} stage=done "
-                f"family_index={split_family_count} patch_count={len(patches)} total_split_patches={split_patch_count}",
-                flush=True,
-            )
+                split_patch_count += len(patches)
+                print(
+                    f"[Manifest] split={split} sample_id={sample_id} stage=done "
+                    f"family_index={split_family_count} patch_count={len(patches)} total_split_patches={split_patch_count}",
+                    flush=True,
+                )
         print(
             f"[Manifest] split={split} completed families={split_family_count} patches={split_patch_count}",
             flush=True,
@@ -773,6 +933,9 @@ def load_family_raster_and_mask(family: Dict, band_indices: Sequence[int], mask_
     image_hwc, raster_meta = read_rgb_geotiff(Path(family["source_image_path"]).resolve(), band_indices=band_indices)
     mask_path = str(family.get("source_mask_path", "")).strip()
     review_mask = read_binary_mask(Path(mask_path), threshold=mask_threshold) if mask_path else None
+    if review_mask is not None and image_hwc.ndim == 3:
+        image_hwc = image_hwc.copy()
+        image_hwc[review_mask <= 0] = 0.0
     return image_hwc, raster_meta, review_mask
 
 
@@ -868,11 +1031,18 @@ def extract_state_lines(
     row = int(patch["row"])
     col = int(patch["col"])
     crop_box = patch["crop_box"]
+    keep_box = patch["keep_box"]
     crop_rect_global = (
         float(crop_box["x_min"]),
         float(crop_box["y_min"]),
         float(crop_box["x_max"]),
         float(crop_box["y_max"]),
+    )
+    local_rect = (
+        float(keep_box["x_min"] - crop_box["x_min"]),
+        float(keep_box["y_min"] - crop_box["y_min"]),
+        float(keep_box["x_max"] - crop_box["x_min"]),
+        float(keep_box["y_max"] - crop_box["y_min"]),
     )
     patch_size = int(crop_box["x_max"] - crop_box["x_min"])
     offset = np.asarray([crop_box["x_min"], crop_box["y_min"]], dtype=np.float32)[None, :]
@@ -882,7 +1052,6 @@ def extract_state_lines(
     if (row - 1, col) in patch_map:
         neighbors.append((patch_map[(row - 1, col)], "top"))
     out: List[Dict] = []
-    patch_rect_local = (0.0, 0.0, float(patch_size), float(patch_size))
     for neighbor_patch, handoff_side in neighbors:
         for segment in owned_segments_by_patch.get(int(neighbor_patch["patch_id"]), []):
             for piece in clip_polyline_to_rect(np.asarray(segment["points_global"], dtype=np.float32), crop_rect_global):
@@ -890,9 +1059,9 @@ def extract_state_lines(
                 if local.ndim != 2 or local.shape[0] < 2:
                     continue
                 boundary_idx = None
-                if point_boundary_side(local[0], patch_rect_local, boundary_tol_px) == handoff_side:
+                if point_boundary_side(local[0], local_rect, boundary_tol_px) == handoff_side:
                     boundary_idx = 0
-                elif point_boundary_side(local[-1], patch_rect_local, boundary_tol_px) == handoff_side:
+                elif point_boundary_side(local[-1], local_rect, boundary_tol_px) == handoff_side:
                     boundary_idx = -1
                 if boundary_idx is None:
                     continue
@@ -914,7 +1083,7 @@ def extract_state_lines(
     seen = set()
     deduped: List[Dict] = []
     for line in sort_lines(out):
-        key = (int(line["source_patch"]), str(line["category"]), tuple((int(p[0]), int(p[1])) for p in line["points"]))
+        key = (int(line["source_patch"]), tuple((int(p[0]), int(p[1])) for p in line["points"]))
         if key in seen:
             continue
         seen.add(key)

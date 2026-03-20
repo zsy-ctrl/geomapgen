@@ -22,9 +22,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lane-relpath", type=str, default=DEFAULT_LANE_RELPATH)
     parser.add_argument("--intersection-relpath", type=str, default=DEFAULT_INTERSECTION_RELPATH)
     parser.add_argument("--mask-threshold", type=int, default=127)
-    parser.add_argument("--tile-size-px", type=int, default=1024)
-    parser.add_argument("--overlap-px", type=int, default=256)
-    parser.add_argument("--keep-margin-px", type=int, default=128)
+    parser.add_argument("--crop-size-px", type=int, default=896)
+    parser.add_argument("--base-start-px", type=int, default=448)
+    parser.add_argument("--base-stride-px", type=int, default=664)
+    parser.add_argument("--axis-count", type=int, default=5)
+    parser.add_argument("--family-grid-size", type=int, default=4)
     parser.add_argument("--review-crop-pad-px", type=int, default=64)
     parser.add_argument("--tile-min-mask-ratio", type=float, default=0.02)
     parser.add_argument("--tile-min-mask-pixels", type=int, default=256)
@@ -48,9 +50,11 @@ def main() -> None:
         lane_relpath=str(args.lane_relpath),
         intersection_relpath=str(args.intersection_relpath),
         mask_threshold=int(args.mask_threshold),
-        tile_size_px=int(args.tile_size_px),
-        overlap_px=int(args.overlap_px),
-        keep_margin_px=int(args.keep_margin_px),
+        crop_size_px=int(args.crop_size_px),
+        base_start_px=int(args.base_start_px),
+        base_stride_px=int(args.base_stride_px),
+        axis_count=int(args.axis_count),
+        family_grid_size=int(args.family_grid_size),
         review_crop_pad_px=int(args.review_crop_pad_px),
         tile_min_mask_ratio=float(args.tile_min_mask_ratio),
         tile_min_mask_pixels=int(args.tile_min_mask_pixels),
@@ -66,9 +70,11 @@ def main() -> None:
         "dataset_root": str(Path(args.dataset_root).resolve()),
         "output_manifest": str(output_manifest),
         "splits": [str(x) for x in args.splits],
-        "tile_size_px": int(args.tile_size_px),
-        "overlap_px": int(args.overlap_px),
-        "keep_margin_px": int(args.keep_margin_px),
+        "crop_size_px": int(args.crop_size_px),
+        "base_start_px": int(args.base_start_px),
+        "base_stride_px": int(args.base_stride_px),
+        "axis_count": int(args.axis_count),
+        "family_grid_size": int(args.family_grid_size),
         "review_crop_pad_px": int(args.review_crop_pad_px),
         "family_count": int(count),
         "shard_index": int(args.shard_index),

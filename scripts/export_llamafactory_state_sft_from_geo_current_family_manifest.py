@@ -31,7 +31,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--resample-step-px", type=float, default=12.0)
     parser.add_argument("--boundary-tol-px", type=float, default=2.5)
     parser.add_argument("--trace-points", type=int, default=8)
-    parser.add_argument("--state-mixture-mode", type=str, default="mixed", choices=["full", "mixed"])
+    parser.add_argument("--state-mixture-mode", type=str, default="full", choices=["full", "mixed"])
     parser.add_argument("--state-no-state-ratio", type=float, default=0.30)
     parser.add_argument("--state-weak-ratio", type=float, default=0.40)
     parser.add_argument("--state-full-ratio", type=float, default=0.30)

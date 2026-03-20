@@ -87,7 +87,7 @@ if [[ "$EXPORT_STAGE_B_DATASET" == "1" ]]; then
     --resample-step-px "${RESAMPLE_STEP_PX:-12.0}" \
     --boundary-tol-px "${BOUNDARY_TOL_PX:-2.5}" \
     --trace-points "${TRACE_POINTS:-8}" \
-    --state-mixture-mode "${STATE_MIXTURE_MODE:-mixed}" \
+    --state-mixture-mode "${STATE_MIXTURE_MODE:-full}" \
     --state-no-state-ratio "${STATE_NO_STATE_RATIO:-0.30}" \
     --state-weak-ratio "${STATE_WEAK_RATIO:-0.40}" \
     --state-full-ratio "${STATE_FULL_RATIO:-0.30}" \
