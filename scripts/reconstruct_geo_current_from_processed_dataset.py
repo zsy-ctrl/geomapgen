@@ -52,7 +52,7 @@ def build_feature_collection(features: List[Dict], crs_name: str, name: str) -> 
 
 
 def _line_color(category: str) -> Tuple[int, int, int]:
-    if str(category) == "intersection_boundary":
+    if str(category) == "intersection_polygon":
         return (255, 180, 0)
     return (0, 255, 255)
 
@@ -71,6 +71,17 @@ def build_overlay_image(
             continue
         color = _line_color(str(row.get("category", "")))
         xy = [(int(pt[0]), int(pt[1])) for pt in points]
+        if str(row.get("geometry_type", "line")) == "polygon" and len(xy) >= 3:
+            draw.polygon(xy, outline=color, width=3)
+            first_xy = xy[0]
+            radius = 5
+            draw.ellipse(
+                (first_xy[0] - radius, first_xy[1] - radius, first_xy[0] + radius, first_xy[1] + radius),
+                fill=(255, 180, 0),
+                outline=(0, 0, 0),
+            )
+            draw.text((first_xy[0] + 6, first_xy[1] - 10), "polygon", fill=(255, 180, 0), font=font)
+            continue
         draw.line(xy, fill=color, width=3)
 
         start_xy = xy[0]
@@ -190,31 +201,51 @@ def main() -> None:
                 global_points = [[int(p[0]) + x0, int(p[1]) + y0] for p in points]
                 key = (
                     str(line.get("category", "")),
+                    str(line.get("geometry_type", "line")),
                     str(line.get("start_type", "")),
                     str(line.get("end_type", "")),
                     tuple((int(p[0]), int(p[1])) for p in global_points),
                 )
-                feature = {
-                    "type": "Feature",
-                    "properties": {
-                        "category": str(line.get("category", "")),
-                        "start_type": str(line.get("start_type", "")),
-                        "end_type": str(line.get("end_type", "")),
-                    },
-                    "geometry": {
-                        "type": "LineString",
-                        "coordinates": pixel_to_world(global_points, transform),
-                    },
-                }
+                geometry_type = str(line.get("geometry_type", "line"))
+                if str(line.get("category", "")) == "intersection_polygon":
+                    ring_world = pixel_to_world(global_points, transform)
+                    if len(ring_world) >= 3 and ring_world[0] != ring_world[-1]:
+                        ring_world.append(list(ring_world[0]))
+                    feature = {
+                        "type": "Feature",
+                        "properties": {
+                            "category": str(line.get("category", "")),
+                            "geometry_type": geometry_type,
+                        },
+                        "geometry": {
+                            "type": "Polygon",
+                            "coordinates": [ring_world],
+                        },
+                    }
+                else:
+                    feature = {
+                        "type": "Feature",
+                        "properties": {
+                            "category": str(line.get("category", "")),
+                            "start_type": str(line.get("start_type", "")),
+                            "end_type": str(line.get("end_type", "")),
+                            "geometry_type": geometry_type,
+                        },
+                        "geometry": {
+                            "type": "LineString",
+                            "coordinates": pixel_to_world(global_points, transform),
+                        },
+                    }
                 visual_lines.append(
                     {
                         "category": str(line.get("category", "")),
+                        "geometry_type": geometry_type,
                         "start_type": str(line.get("start_type", "")),
                         "end_type": str(line.get("end_type", "")),
                         "points": global_points,
                     }
                 )
-                if str(line.get("category", "")) == "intersection_boundary":
+                if str(line.get("category", "")) == "intersection_polygon":
                     if key not in seen_inter:
                         seen_inter.add(key)
                         inter_features.append(feature)
@@ -232,9 +263,9 @@ def main() -> None:
         build_overlay_image(canvas=canvas, visual_lines=visual_lines).save(overlay_path)
 
         lane_geojson = build_feature_collection(lane_features, crs_name=crs_name, name="Lane")
-        inter_geojson = build_feature_collection(inter_features, crs_name=crs_name, name="IntersectionBoundary")
+        inter_geojson = build_feature_collection(inter_features, crs_name=crs_name, name="Intersection")
         lane_path = sample_out / "Lane.geojson"
-        inter_path = sample_out / "IntersectionBoundary.geojson"
+        inter_path = sample_out / "Intersection.geojson"
         with lane_path.open("w", encoding="utf-8") as f:
             json.dump(lane_geojson, f, ensure_ascii=False, indent=2)
         with inter_path.open("w", encoding="utf-8") as f:
@@ -246,7 +277,7 @@ def main() -> None:
                 "source_image_path": str(source_image_path),
                 "patch_count": len(grouped[sample_id]),
                 "lane_feature_count": len(lane_features),
-                "intersection_boundary_count": len(inter_features),
+                "intersection_polygon_count": len(inter_features),
                 "tif_path": str(tif_path),
                 "overlay_path": str(overlay_path),
                 "lane_geojson_path": str(lane_path),

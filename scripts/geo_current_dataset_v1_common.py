@@ -37,7 +37,7 @@ DEFAULT_STAGEA_SYSTEM_PROMPT = (
     "Predict the complete patch-local line map from the current image.\n"
     "The output JSON schema is {\"lines\": [...]}.\n"
     "Each line must stay in patch-local pixel coordinates.\n"
-    "Use category lane_line for roads and intersection_boundary for intersection borders.\n"
+    "Use category lane_line for roads and intersection_polygon for intersections.\n"
     "Return only valid JSON and no extra text."
 )
 DEFAULT_STAGEB_PROMPT_TEMPLATE = """<image>
@@ -53,7 +53,7 @@ DEFAULT_STAGEB_SYSTEM_PROMPT = (
     "Preserve cross-patch continuity whenever those traces enter the current patch.\n"
     "The output JSON schema is {\"lines\": [...]}.\n"
     "Each line must stay in patch-local pixel coordinates.\n"
-    "Use category lane_line for roads and intersection_boundary for intersection borders.\n"
+    "Use category lane_line for roads and intersection_polygon for intersections.\n"
     "Return only valid JSON and no markdown fences."
 )
 
@@ -630,11 +630,54 @@ def geojson_lines_to_pixel_lines(geojson_dict: Dict, raster_meta: RasterMeta, ca
         pixel = dedup_points(world_to_pixel(world, affine=raster_meta.affine))
         if pixel.ndim != 2 or pixel.shape[0] < 2:
             continue
-        out.append({"category": str(category), "points_global": pixel.astype(np.float32)})
+        out.append({"category": str(category), "geometry_type": "line", "points_global": pixel.astype(np.float32)})
     return out
 
 
-def geojson_polygon_boundaries_to_pixel_lines(geojson_dict: Dict, raster_meta: RasterMeta, category: str) -> List[Dict]:
+def ensure_closed_ring(points_xy: np.ndarray, eps: float = 1e-3) -> np.ndarray:
+    pts = np.asarray(points_xy, dtype=np.float32)
+    if pts.ndim != 2 or pts.shape[0] == 0:
+        return np.zeros((0, 2), dtype=np.float32)
+    if pts.shape[0] == 1:
+        return np.concatenate([pts, pts], axis=0).astype(np.float32)
+    if float(np.linalg.norm(pts[0] - pts[-1])) <= float(eps):
+        return pts.astype(np.float32)
+    return np.concatenate([pts, pts[:1]], axis=0).astype(np.float32)
+
+
+def _rdp_recursive(points_xy: np.ndarray, epsilon: float) -> np.ndarray:
+    pts = np.asarray(points_xy, dtype=np.float32)
+    if pts.shape[0] <= 2:
+        return pts
+    start = pts[0]
+    end = pts[-1]
+    seg = end - start
+    seg_len = float(np.linalg.norm(seg))
+    if seg_len <= 1e-6:
+        distances = np.linalg.norm(pts[1:-1] - start[None, :], axis=1)
+    else:
+        rel = pts[1:-1] - start[None, :]
+        cross = np.abs(seg[0] * rel[:, 1] - seg[1] * rel[:, 0])
+        distances = cross / seg_len
+    if distances.size == 0:
+        return np.stack([start, end], axis=0).astype(np.float32)
+    index = int(np.argmax(distances))
+    max_dist = float(distances[index])
+    if max_dist <= float(epsilon):
+        return np.stack([start, end], axis=0).astype(np.float32)
+    left = _rdp_recursive(pts[: index + 2], epsilon=float(epsilon))
+    right = _rdp_recursive(pts[index + 1 :], epsilon=float(epsilon))
+    return np.concatenate([left[:-1], right], axis=0).astype(np.float32)
+
+
+def simplify_polyline_straight(points_xy: np.ndarray, tolerance_px: float = 1.5) -> np.ndarray:
+    pts = dedup_points(np.asarray(points_xy, dtype=np.float32))
+    if pts.ndim != 2 or pts.shape[0] < 3:
+        return pts.astype(np.float32)
+    return dedup_points(_rdp_recursive(pts, epsilon=max(0.25, float(tolerance_px)))).astype(np.float32)
+
+
+def geojson_polygons_to_pixel_rings(geojson_dict: Dict, raster_meta: RasterMeta, category: str) -> List[Dict]:
     src_crs = detect_geojson_crs(geojson_dict)
     transformer = build_transformer(src_crs=src_crs, dst_crs=raster_meta.crs)
     out: List[Dict] = []
@@ -644,17 +687,16 @@ def geojson_polygon_boundaries_to_pixel_lines(geojson_dict: Dict, raster_meta: R
         geometry = feature.get("geometry", {})
         if str(geometry.get("type", "")).strip().lower() != "polygon":
             continue
-        for ring_coords in geometry.get("coordinates", []):
-            world = project_coords(ring_coords, transformer=transformer)
-            pixel = world_to_pixel(world, affine=raster_meta.affine)
-            if pixel.ndim != 2 or pixel.shape[0] < 2:
-                continue
-            if np.allclose(pixel[0], pixel[-1], atol=1e-3):
-                pixel = pixel[:-1]
-            pixel = dedup_points(pixel)
-            if pixel.ndim != 2 or pixel.shape[0] < 2:
-                continue
-            out.append({"category": str(category), "points_global": pixel.astype(np.float32)})
+        polygon_coords = geometry.get("coordinates", [])
+        if not isinstance(polygon_coords, list) or len(polygon_coords) == 0:
+            continue
+        ring_coords = polygon_coords[0]
+        world = project_coords(ring_coords, transformer=transformer)
+        pixel = world_to_pixel(world, affine=raster_meta.affine)
+        pixel = ensure_closed_ring(dedup_points(pixel))
+        if pixel.ndim != 2 or pixel.shape[0] < 4:
+            continue
+        out.append({"category": str(category), "geometry_type": "polygon", "points_global": pixel.astype(np.float32)})
     return out
 
 
@@ -675,13 +717,74 @@ def load_sample_global_lines(
         intersection_path = sample_dir / intersection_relpath
         if intersection_path.is_file():
             out.extend(
-                geojson_polygon_boundaries_to_pixel_lines(
+                geojson_polygons_to_pixel_rings(
                     load_json(intersection_path),
                     raster_meta=raster_meta,
-                    category="intersection_boundary",
+                    category="intersection_polygon",
                 )
             )
     return out
+
+
+def clip_polygon_ring_to_rect(points_xy: np.ndarray, rect: Tuple[float, float, float, float]) -> List[np.ndarray]:
+    pts = ensure_closed_ring(np.asarray(points_xy, dtype=np.float32))
+    if pts.ndim != 2 or pts.shape[0] < 4:
+        return []
+    poly = pts[:-1].astype(np.float32)
+    x_min, y_min, x_max, y_max = [float(v) for v in rect]
+
+    def inside_left(p): return float(p[0]) >= x_min
+    def inside_right(p): return float(p[0]) <= x_max
+    def inside_top(p): return float(p[1]) >= y_min
+    def inside_bottom(p): return float(p[1]) <= y_max
+
+    def intersect_vertical(s, e, x_edge):
+        s = np.asarray(s, dtype=np.float32)
+        e = np.asarray(e, dtype=np.float32)
+        dx = float(e[0] - s[0])
+        if abs(dx) <= 1e-6:
+            return np.asarray([float(x_edge), float(s[1])], dtype=np.float32)
+        t = (float(x_edge) - float(s[0])) / dx
+        return np.asarray([float(x_edge), float(s[1] + t * (e[1] - s[1]))], dtype=np.float32)
+
+    def intersect_horizontal(s, e, y_edge):
+        s = np.asarray(s, dtype=np.float32)
+        e = np.asarray(e, dtype=np.float32)
+        dy = float(e[1] - s[1])
+        if abs(dy) <= 1e-6:
+            return np.asarray([float(s[0]), float(y_edge)], dtype=np.float32)
+        t = (float(y_edge) - float(s[1])) / dy
+        return np.asarray([float(s[0] + t * (e[0] - s[0])), float(y_edge)], dtype=np.float32)
+
+    def clip_against(subject: List[np.ndarray], inside_fn, intersect_fn) -> List[np.ndarray]:
+        if not subject:
+            return []
+        output: List[np.ndarray] = []
+        prev = subject[-1]
+        prev_inside = bool(inside_fn(prev))
+        for curr in subject:
+            curr_inside = bool(inside_fn(curr))
+            if curr_inside:
+                if not prev_inside:
+                    output.append(np.asarray(intersect_fn(prev, curr), dtype=np.float32))
+                output.append(np.asarray(curr, dtype=np.float32))
+            elif prev_inside:
+                output.append(np.asarray(intersect_fn(prev, curr), dtype=np.float32))
+            prev = curr
+            prev_inside = curr_inside
+        return output
+
+    subject = [np.asarray(p, dtype=np.float32) for p in poly]
+    subject = clip_against(subject, inside_left, lambda s, e: intersect_vertical(s, e, x_min))
+    subject = clip_against(subject, inside_right, lambda s, e: intersect_vertical(s, e, x_max))
+    subject = clip_against(subject, inside_top, lambda s, e: intersect_horizontal(s, e, y_min))
+    subject = clip_against(subject, inside_bottom, lambda s, e: intersect_horizontal(s, e, y_max))
+    if len(subject) < 3:
+        return []
+    ring = ensure_closed_ring(dedup_points(np.asarray(subject, dtype=np.float32)))
+    if ring.shape[0] < 4:
+        return []
+    return [ring.astype(np.float32)]
 
 
 def build_patch_segments_global(
@@ -693,6 +796,24 @@ def build_patch_segments_global(
 ) -> List[Dict]:
     out: List[Dict] = []
     for line in global_lines:
+        if str(line.get("geometry_type", "line")) == "polygon":
+            source_points = ensure_closed_ring(np.asarray(line["points_global"], dtype=np.float32))
+            if source_points.ndim != 2 or source_points.shape[0] < 4:
+                continue
+            for clipped_ring in clip_polygon_ring_to_rect(source_points, rect_global):
+                ring = ensure_closed_ring(np.asarray(clipped_ring, dtype=np.float32))
+                if ring.ndim != 2 or ring.shape[0] < 4:
+                    continue
+                out.append(
+                    {
+                        "category": str(line["category"]),
+                        "geometry_type": "polygon",
+                        "points_global": ring.astype(np.float32),
+                        "start_type": "closed",
+                        "end_type": "closed",
+                    }
+                )
+            continue
         for masked_piece in mask_clip_line(line["points_global"], review_mask=review_mask, min_points=2):
             source_points = np.asarray(masked_piece["points"], dtype=np.float32)
             for clipped_piece in clip_polyline_to_rect(source_points, rect_global):
@@ -705,6 +826,7 @@ def build_patch_segments_global(
                     cut_start=bool(masked_piece.get("cut_start", False)),
                     cut_end=bool(masked_piece.get("cut_end", False)),
                 )
+                piece = simplify_polyline_straight(piece, tolerance_px=1.5)
                 piece = resample_polyline(piece, step_px=resample_step_px)
                 if piece.ndim != 2 or piece.shape[0] < 2:
                     continue
@@ -731,7 +853,16 @@ def build_patch_target_lines(patch_segments_global: Sequence[Dict], patch: Dict)
     out: List[Dict] = []
     for segment in patch_segments_global:
         local = np.asarray(segment["points_global"], dtype=np.float32) - offset
-        points_json = simplify_for_json(local, patch_size=patch_size)
+        if str(segment.get("geometry_type", "line")) == "polygon":
+            points_json = simplify_for_json(ensure_closed_ring(local), patch_size=patch_size)
+            if len(points_json) >= 2 and points_json[0] != points_json[-1]:
+                points_json.append(list(points_json[0]))
+            if len(points_json) < 4:
+                continue
+        else:
+            points_json = simplify_for_json(local, patch_size=patch_size)
+            if len(points_json) < 2:
+                continue
         if len(points_json) < 2:
             continue
         out.append(
@@ -739,6 +870,7 @@ def build_patch_target_lines(patch_segments_global: Sequence[Dict], patch: Dict)
                 "category": str(segment["category"]),
                 "start_type": str(segment["start_type"]),
                 "end_type": str(segment["end_type"]),
+                "geometry_type": str(segment.get("geometry_type", "line")),
                 "points": points_json,
             }
         )
@@ -1058,6 +1190,8 @@ def extract_state_lines(
     out: List[Dict] = []
     for neighbor_patch, handoff_side in neighbors:
         for segment in owned_segments_by_patch.get(int(neighbor_patch["patch_id"]), []):
+            if str(segment.get("geometry_type", "line")) != "line":
+                continue
             for piece in clip_polyline_to_rect(np.asarray(segment["points_global"], dtype=np.float32), crop_rect_global):
                 local = np.asarray(piece, dtype=np.float32) - offset
                 if local.ndim != 2 or local.shape[0] < 2:
@@ -1189,6 +1323,7 @@ def sanitize_pred_lines(pred_lines: Sequence[Dict], patch_size: int) -> List[Dic
                 "category": str(line.get("category", "lane_line")),
                 "start_type": start_type,
                 "end_type": end_type,
+                "geometry_type": str(line.get("geometry_type", "line")),
                 "points": points,
             }
         )
@@ -1208,6 +1343,7 @@ def local_lines_to_global(pred_lines: Sequence[Dict], patch: Dict) -> List[Dict]
                 "category": str(line.get("category", "lane_line")),
                 "start_type": str(line.get("start_type", "start")),
                 "end_type": str(line.get("end_type", "end")),
+                "geometry_type": str(line.get("geometry_type", "line")),
                 "points_global": dedup_points(arr + offset),
             }
         )

@@ -22,7 +22,7 @@ Basic patch info:
 - keep_box: {keep_box}
 
 Return only valid JSON with schema {{"lines":[...]}}.
-Use category lane_line for roads and intersection_boundary for intersection borders.
+Use category lane_line for roads and intersection_polygon for intersections.
 All points must be in patch-local pixel coordinates of the current patch."""
 
 
