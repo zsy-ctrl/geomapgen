@@ -107,10 +107,20 @@ def build_overlay_image(
     canvas: np.ndarray,
     visual_lines: List[Dict],
     color_mode: str = "category",
+    keep_boxes: List[Dict] | None = None,
 ) -> Image.Image:
     image = Image.fromarray(canvas, mode="RGB")
     draw = ImageDraw.Draw(image)
     font = ImageFont.load_default()
+
+    for keep_box in list(keep_boxes or []):
+        x_min = int(round(float(keep_box.get("x_min", 0))))
+        y_min = int(round(float(keep_box.get("y_min", 0))))
+        x_max = int(round(float(keep_box.get("x_max", 0))))
+        y_max = int(round(float(keep_box.get("y_max", 0))))
+        label = str(keep_box.get("label", "keep_box"))
+        draw.rectangle((x_min, y_min, x_max, y_max), outline=(255, 255, 255), width=2)
+        draw.text((x_min + 4, max(0, y_min - 12)), label, fill=(255, 255, 255), font=font)
 
     for row in visual_lines:
         points = row.get("points", [])

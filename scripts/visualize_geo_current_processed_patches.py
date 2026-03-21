@@ -118,22 +118,30 @@ def main() -> None:
             if not float_source:
                 float_source = uv_lines_to_local(row.get("target_lines", []), patch=row)
             float_lines = _build_visual_lines(float_source, kind="float")
+            crop_box = row.get("crop_box", {})
+            keep_box = row.get("keep_box", {})
+            keep_box_local = {
+                "x_min": float(keep_box.get("x_min", 0)) - float(crop_box.get("x_min", 0)),
+                "y_min": float(keep_box.get("y_min", 0)) - float(crop_box.get("y_min", 0)),
+                "x_max": float(keep_box.get("x_max", 0)) - float(crop_box.get("x_min", 0)),
+                "y_max": float(keep_box.get("y_max", 0)) - float(crop_box.get("y_min", 0)),
+                "label": "keep_box",
+            }
 
             patch_image.save(patch_dir / "patch.png")
-            build_overlay_image(canvas=patch_np, visual_lines=quantized_lines).save(
+            build_overlay_image(canvas=patch_np, visual_lines=quantized_lines, keep_boxes=[keep_box_local]).save(
                 patch_dir / "overlay_quantized.png"
             )
-            build_overlay_image(canvas=patch_np, visual_lines=float_lines, color_mode="compare").save(
+            build_overlay_image(canvas=patch_np, visual_lines=float_lines, color_mode="compare", keep_boxes=[keep_box_local]).save(
                 patch_dir / "overlay_float.png"
             )
             build_overlay_image(
                 canvas=patch_np,
                 visual_lines=[*float_lines, *quantized_lines],
                 color_mode="compare",
+                keep_boxes=[keep_box_local],
             ).save(patch_dir / "overlay_compare.png")
 
-            crop_box = row.get("crop_box", {})
-            keep_box = row.get("keep_box", {})
             patch_meta = {
                 "id": row_id,
                 "family_id": row.get("family_id"),
@@ -142,12 +150,7 @@ def main() -> None:
                 "col": int(row.get("col", 0)),
                 "crop_box": crop_box,
                 "keep_box": keep_box,
-                "keep_box_local": {
-                    "x_min": float(keep_box.get("x_min", 0)) - float(crop_box.get("x_min", 0)),
-                    "y_min": float(keep_box.get("y_min", 0)) - float(crop_box.get("y_min", 0)),
-                    "x_max": float(keep_box.get("x_max", 0)) - float(crop_box.get("x_min", 0)),
-                    "y_max": float(keep_box.get("y_max", 0)) - float(crop_box.get("y_min", 0)),
-                },
+                "keep_box_local": keep_box_local,
                 "num_target_lines": int(len(row.get("target_lines", []))),
                 "num_target_lines_float": int(len(row.get("target_lines_float", []))),
             }
