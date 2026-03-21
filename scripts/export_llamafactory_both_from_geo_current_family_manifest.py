@@ -133,6 +133,7 @@ def export_families_to_stage_datasets(
     max_families_per_split: int,
     empty_patch_drop_ratio: float,
     empty_patch_seed: int,
+    empty_patch_drop_ratio_by_split: Dict[str, float] | None,
     stagea_system_prompt: str,
     stagea_prompt_template: str,
     stageb_system_prompt: str,
@@ -289,9 +290,12 @@ def export_families_to_stage_datasets(
 
     for split in splits:
         split = str(split)
+        split_drop_ratio = float(empty_patch_drop_ratio)
+        if empty_patch_drop_ratio_by_split is not None and split in empty_patch_drop_ratio_by_split:
+            split_drop_ratio = float(empty_patch_drop_ratio_by_split[split])
         kept_records, filter_summary[split] = downsample_empty_patch_records(
             records=split_records[split],
-            drop_ratio=float(empty_patch_drop_ratio),
+            drop_ratio=float(split_drop_ratio),
             seed=int(empty_patch_seed),
             split=split,
         )
@@ -382,6 +386,7 @@ def main() -> None:
         max_families_per_split=int(args.max_families_per_split),
         empty_patch_drop_ratio=float(args.empty_patch_drop_ratio),
         empty_patch_seed=int(args.empty_patch_seed),
+        empty_patch_drop_ratio_by_split=None,
         stagea_system_prompt=stagea_system_prompt,
         stagea_prompt_template=str(args.stagea_prompt_template),
         stageb_system_prompt=stageb_system_prompt,

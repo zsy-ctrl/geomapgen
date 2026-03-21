@@ -27,9 +27,9 @@ Previous state:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Build a fixed-grid target-box patch-only dataset from an existing full-patch patch-only dataset."
+        description="Build a fixed-grid target-box dataset from an existing full-patch Stage A or Stage B dataset."
     )
-    parser.add_argument("--input-root", type=Path, required=True, help="Existing patch-only dataset root.")
+    parser.add_argument("--input-root", type=Path, required=True, help="Existing full-patch dataset root, e.g. stage_a/dataset or stage_b/dataset.")
     parser.add_argument("--output-root", type=Path, required=True, help="Output dataset root.")
     parser.add_argument("--splits", type=str, nargs="+", default=["train", "val"], help="Splits to process.")
     parser.add_argument("--grid-size", type=int, default=4, help="Grid size per side. 4 means 16 fixed target boxes.")
@@ -754,6 +754,7 @@ def build_fixed_grid_targetbox_dataset(
     splits: Sequence[str],
     grid_size: int,
     target_empty_ratio: float,
+    target_empty_ratio_by_split: Optional[Dict[str, float]],
     seed: int,
     max_source_samples_per_split: int,
     boundary_tol_px: float,
@@ -788,12 +789,15 @@ def build_fixed_grid_targetbox_dataset(
 
     split_list = [str(x) for x in splits]
     for split in split_list:
+        split_empty_ratio = float(target_empty_ratio)
+        if target_empty_ratio_by_split is not None and split in target_empty_ratio_by_split:
+            split_empty_ratio = float(target_empty_ratio_by_split[split])
         summary["splits"][split] = build_split(
             split=split,
             input_root=input_root,
             output_root=output_root,
             grid_size=int(grid_size),
-            target_empty_ratio=float(target_empty_ratio),
+            target_empty_ratio=float(split_empty_ratio),
             rng=rng,
             max_source_samples_per_split=int(max_source_samples_per_split),
             boundary_tol_px=float(boundary_tol_px),
@@ -823,6 +827,7 @@ def main() -> None:
         splits=[str(x) for x in args.splits],
         grid_size=int(args.grid_size),
         target_empty_ratio=float(args.target_empty_ratio),
+        target_empty_ratio_by_split=None,
         seed=int(args.seed),
         max_source_samples_per_split=int(args.max_source_samples_per_split),
         boundary_tol_px=float(args.boundary_tol_px),

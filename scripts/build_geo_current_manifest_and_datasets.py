@@ -21,6 +21,15 @@ from geo_current_dataset_v1_common import (
 )
 
 
+def _build_split_roots(args: argparse.Namespace) -> dict:
+    split_roots = {}
+    if str(args.train_root).strip():
+        split_roots["train"] = Path(str(args.train_root).strip()).resolve()
+    if str(args.val_root).strip():
+        split_roots["val"] = Path(str(args.val_root).strip()).resolve()
+    return split_roots
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="One-click build manifest + Stage A/Stage B datasets from manual train/val roots.")
     parser.add_argument("--output-root", type=str, required=True)
@@ -89,34 +98,60 @@ def main() -> None:
     ensure_dir(output_root)
     manifest_path = Path(args.manifest_path).resolve() if str(args.manifest_path).strip() else (output_root / "family_manifest.jsonl")
 
-    split_roots = {}
-    if str(args.train_root).strip():
-        split_roots["train"] = Path(str(args.train_root).strip()).resolve()
-    if str(args.val_root).strip():
-        split_roots["val"] = Path(str(args.val_root).strip()).resolve()
-
-    families = build_manifest_for_dataset(
-        dataset_root=Path(args.dataset_root).resolve(),
-        splits=[str(x) for x in args.splits],
-        image_relpath=str(args.image_relpath),
-        mask_relpath=str(args.mask_relpath),
-        lane_relpath=str(args.lane_relpath),
-        intersection_relpath=str(args.intersection_relpath),
-        mask_threshold=int(args.mask_threshold),
-        tile_size_px=int(args.tile_size_px),
-        overlap_px=int(args.overlap_px),
-        keep_margin_px=int(args.keep_margin_px),
-        review_crop_pad_px=int(args.review_crop_pad_px),
-        tile_min_mask_ratio=float(args.tile_min_mask_ratio),
-        tile_min_mask_pixels=int(args.tile_min_mask_pixels),
-        tile_max_per_sample=int(args.tile_max_per_sample),
-        search_within_review_bbox=bool(args.search_within_review_bbox),
-        fallback_to_all_if_empty=bool(args.fallback_to_all_if_empty),
-        max_samples_per_split=int(args.max_samples_per_split),
-        shard_index=int(args.shard_index),
-        num_shards=int(args.num_shards),
-        split_roots=split_roots or None,
-    )
+    split_roots = _build_split_roots(args)
+    split_list = [str(x) for x in args.splits]
+    families = []
+    dataset_root = Path(args.dataset_root).resolve()
+    if "train" in split_list:
+        families.extend(
+            build_manifest_for_dataset(
+                dataset_root=dataset_root,
+                splits=["train"],
+                image_relpath=str(args.image_relpath),
+                mask_relpath=str(args.mask_relpath),
+                lane_relpath=str(args.lane_relpath),
+                intersection_relpath=str(args.intersection_relpath),
+                mask_threshold=int(args.mask_threshold),
+                tile_size_px=int(args.tile_size_px),
+                overlap_px=int(args.overlap_px),
+                keep_margin_px=int(args.keep_margin_px),
+                review_crop_pad_px=int(args.review_crop_pad_px),
+                tile_min_mask_ratio=float(args.tile_min_mask_ratio),
+                tile_min_mask_pixels=int(args.tile_min_mask_pixels),
+                tile_max_per_sample=int(args.tile_max_per_sample),
+                search_within_review_bbox=bool(args.search_within_review_bbox),
+                fallback_to_all_if_empty=bool(args.fallback_to_all_if_empty),
+                max_samples_per_split=int(args.max_samples_per_split),
+                shard_index=int(args.shard_index),
+                num_shards=int(args.num_shards),
+                split_roots=split_roots or None,
+            )
+        )
+    if "val" in split_list:
+        families.extend(
+            build_manifest_for_dataset(
+                dataset_root=dataset_root,
+                splits=["val"],
+                image_relpath=str(args.image_relpath),
+                mask_relpath=str(args.mask_relpath),
+                lane_relpath=str(args.lane_relpath),
+                intersection_relpath=str(args.intersection_relpath),
+                mask_threshold=int(args.mask_threshold),
+                tile_size_px=int(args.tile_size_px),
+                overlap_px=int(args.overlap_px),
+                keep_margin_px=int(args.keep_margin_px),
+                review_crop_pad_px=int(args.review_crop_pad_px),
+                tile_min_mask_ratio=0.0,
+                tile_min_mask_pixels=0,
+                tile_max_per_sample=0,
+                search_within_review_bbox=False,
+                fallback_to_all_if_empty=True,
+                max_samples_per_split=int(args.max_samples_per_split),
+                shard_index=int(args.shard_index),
+                num_shards=int(args.num_shards),
+                split_roots=split_roots or None,
+            )
+        )
     family_count = write_jsonl(manifest_path, families)
 
     include_lane = True if (not bool(args.include_lane) and not bool(args.include_intersection_boundary)) else bool(args.include_lane)
@@ -146,6 +181,7 @@ def main() -> None:
         max_families_per_split=int(args.max_families_per_split),
         empty_patch_drop_ratio=float(args.empty_patch_drop_ratio),
         empty_patch_seed=int(args.empty_patch_seed),
+        empty_patch_drop_ratio_by_split={"val": 0.0},
         stagea_system_prompt=stagea_system_prompt,
         stagea_prompt_template=str(args.stagea_prompt_template),
         stageb_system_prompt=stageb_system_prompt,
@@ -172,6 +208,7 @@ def main() -> None:
             splits=[str(x) for x in args.splits],
             grid_size=int(args.fixed16_grid_size),
             target_empty_ratio=float(args.fixed16_target_empty_ratio),
+            target_empty_ratio_by_split={"val": 1.0},
             seed=int(args.fixed16_seed),
             max_source_samples_per_split=int(args.fixed16_max_source_samples_per_split),
             boundary_tol_px=float(args.fixed16_boundary_tol_px),
@@ -187,6 +224,7 @@ def main() -> None:
             splits=[str(x) for x in args.splits],
             grid_size=int(args.fixed16_grid_size),
             target_empty_ratio=float(args.fixed16_target_empty_ratio),
+            target_empty_ratio_by_split={"val": 1.0},
             seed=int(args.fixed16_seed),
             max_source_samples_per_split=int(args.fixed16_max_source_samples_per_split),
             boundary_tol_px=float(args.fixed16_boundary_tol_px),
@@ -213,6 +251,13 @@ def main() -> None:
             "tile_max_per_sample": int(args.tile_max_per_sample),
             "search_within_review_bbox": bool(args.search_within_review_bbox),
             "fallback_to_all_if_empty": bool(args.fallback_to_all_if_empty),
+            "val_override": {
+                "search_within_review_bbox": False,
+                "tile_min_mask_ratio": 0.0,
+                "tile_min_mask_pixels": 0,
+                "tile_max_per_sample": 0,
+                "fallback_to_all_if_empty": True,
+            },
             "max_samples_per_split": int(args.max_samples_per_split),
             "shard_index": int(args.shard_index),
             "num_shards": int(args.num_shards),
@@ -224,6 +269,7 @@ def main() -> None:
             "state_mixture_mode": str(args.state_mixture_mode),
             "empty_patch_drop_ratio": float(args.empty_patch_drop_ratio),
             "empty_patch_seed": int(args.empty_patch_seed),
+            "empty_patch_drop_ratio_by_split": {"val": 0.0},
         },
         "fixed16_config": {
             "enabled": not bool(args.skip_fixed16_build),
@@ -231,6 +277,7 @@ def main() -> None:
             "stage_b_output_root": str(fixed16_stageb_output_root),
             "grid_size": int(args.fixed16_grid_size),
             "target_empty_ratio": float(args.fixed16_target_empty_ratio),
+            "target_empty_ratio_by_split": {"val": 1.0},
             "seed": int(args.fixed16_seed),
             "resample_step_px": float(args.fixed16_resample_step_px),
             "boundary_tol_px": float(args.fixed16_boundary_tol_px),
