@@ -1510,6 +1510,7 @@ def build_manifest_for_dataset(
     max_samples_per_split: int,
     shard_index: int = 0,
     num_shards: int = 1,
+    split_roots: Optional[Dict[str, Path]] = None,
 ) -> List[Dict]:
     families: List[Dict] = []
     shard_index = max(0, int(shard_index))
@@ -1517,7 +1518,8 @@ def build_manifest_for_dataset(
     if shard_index >= num_shards:
         raise ValueError(f"Invalid shard config: shard_index={shard_index} num_shards={num_shards}")
     for split in splits:
-        split_root = dataset_root / str(split)
+        explicit_root = None if split_roots is None else split_roots.get(str(split))
+        split_root = Path(explicit_root).resolve() if explicit_root is not None else dataset_root / str(split)
         if not split_root.is_dir():
             print(f"[Manifest] skip split={split} reason=missing_dir path={split_root}", flush=True)
             continue

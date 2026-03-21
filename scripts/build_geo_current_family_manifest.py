@@ -15,6 +15,8 @@ from geo_current_dataset_v1_common import (
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build v1-style family manifest from the current GeoTIFF+GeoJSON dataset.")
     parser.add_argument("--dataset-root", type=str, default="/dataset/zsy/dataset-extracted")
+    parser.add_argument("--train-root", type=str, default="")
+    parser.add_argument("--val-root", type=str, default="")
     parser.add_argument("--output-manifest", type=str, required=True)
     parser.add_argument("--splits", type=str, nargs="+", default=["train", "val"])
     parser.add_argument("--image-relpath", type=str, default=DEFAULT_IMAGE_RELPATH)
@@ -40,6 +42,11 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     output_manifest = Path(args.output_manifest).resolve()
+    split_roots = {}
+    if str(args.train_root).strip():
+        split_roots["train"] = Path(str(args.train_root).strip()).resolve()
+    if str(args.val_root).strip():
+        split_roots["val"] = Path(str(args.val_root).strip()).resolve()
     families = build_manifest_for_dataset(
         dataset_root=Path(args.dataset_root).resolve(),
         splits=[str(x) for x in args.splits],
@@ -60,6 +67,7 @@ def main() -> None:
         max_samples_per_split=int(args.max_samples_per_split),
         shard_index=int(args.shard_index),
         num_shards=int(args.num_shards),
+        split_roots=split_roots or None,
     )
     count = write_jsonl(output_manifest, families)
     summary = {

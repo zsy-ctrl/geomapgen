@@ -17,6 +17,13 @@ Please construct the road map from ({start_x},{start_y}) to ({end_x},{end_y}) in
 Only predict road segments inside the target box [{box_x_min},{box_y_min},{box_x_max},{box_y_max}].
 Keep all coordinates in the patch-local coordinate system."""
 
+DEFAULT_STATE_PROMPT_TEMPLATE = """<image>
+Please construct the road map from ({start_x},{start_y}) to ({end_x},{end_y}) in the satellite image.
+Only predict road segments inside the target box [{box_x_min},{box_y_min},{box_x_max},{box_y_max}].
+Keep all coordinates in the patch-local coordinate system.
+Previous state:
+{state_json}"""
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -373,8 +380,12 @@ def build_target_lines_for_box(
     return sort_lines(out)
 
 
-def format_prompt_text(prompt_fields: Dict[str, int]) -> str:
-    return DEFAULT_PROMPT_TEMPLATE.format(**prompt_fields)
+def format_prompt_text(prompt_fields: Dict[str, int], state_json: Optional[str] = None) -> str:
+    if state_json is None:
+        return DEFAULT_PROMPT_TEMPLATE.format(**prompt_fields)
+    fields = dict(prompt_fields)
+    fields["state_json"] = str(state_json)
+    return DEFAULT_STATE_PROMPT_TEMPLATE.format(**fields)
 
 
 def make_record(sample_id: str, image_rel_path: str, prompt_text: str, target_lines: Sequence[Dict], system_prompt: str) -> Dict:
@@ -383,6 +394,28 @@ def make_record(sample_id: str, image_rel_path: str, prompt_text: str, target_li
     if str(system_prompt).strip():
         messages.append({"role": "system", "content": str(system_prompt).strip()})
     messages.append({"role": "user", "content": str(prompt_text)})
+    messages.append({"role": "assistant", "content": target_json})
+    return {
+        "id": sample_id,
+        "messages": messages,
+        "images": [image_rel_path],
+    }
+
+
+def make_state_record(
+    sample_id: str,
+    image_rel_path: str,
+    prompt_text: str,
+    target_lines: Sequence[Dict],
+    state_lines: Sequence[Dict],
+    system_prompt: str,
+) -> Dict:
+    state_json = json.dumps({"lines": list(state_lines)}, ensure_ascii=False, separators=(",", ":"))
+    target_json = json.dumps({"lines": list(target_lines)}, ensure_ascii=False, separators=(",", ":"))
+    messages: List[Dict] = []
+    if str(system_prompt).strip():
+        messages.append({"role": "system", "content": str(system_prompt).strip()})
+    messages.append({"role": "user", "content": str(prompt_text).format(state_json=state_json) if "{state_json}" in str(prompt_text) else str(prompt_text)})
     messages.append({"role": "assistant", "content": target_json})
     return {
         "id": sample_id,
@@ -555,6 +588,8 @@ def build_split(
         if patch_size <= 1:
             continue
         target_lines_full = list(src_meta.get("target_lines", []))
+        source_has_state = ("state_lines" in src_meta) or ("state_mode" in src_meta)
+        state_lines_full = list(src_meta.get("state_lines", [])) if source_has_state else []
         image_rel_path = str(src_meta.get("image") or src_row.get("images", [""])[0])
         system_prompt = extract_message_content(src_row, "system") if reuse_system_prompt else ""
 
@@ -573,25 +608,36 @@ def build_split(
                 resample_step_px=resample_step_px,
             )
             sample_id = f"{source_id}_g{int(box['grid_row'])}{int(box['grid_col'])}"
-            prompt_text = format_prompt_text(
-                {
-                    "start_x": int(prompt_info["start_x"]),
-                    "start_y": int(prompt_info["start_y"]),
-                    "end_x": int(prompt_info["end_x"]),
-                    "end_y": int(prompt_info["end_y"]),
-                    "box_x_min": int(box["x_min"]),
-                    "box_y_min": int(box["y_min"]),
-                    "box_x_max": int(box["x_max"]),
-                    "box_y_max": int(box["y_max"]),
-                }
-            )
-            row = make_record(
-                sample_id=sample_id,
-                image_rel_path=image_rel_path,
-                prompt_text=prompt_text,
-                target_lines=target_lines,
-                system_prompt=system_prompt,
-            )
+            prompt_fields = {
+                "start_x": int(prompt_info["start_x"]),
+                "start_y": int(prompt_info["start_y"]),
+                "end_x": int(prompt_info["end_x"]),
+                "end_y": int(prompt_info["end_y"]),
+                "box_x_min": int(box["x_min"]),
+                "box_y_min": int(box["y_min"]),
+                "box_x_max": int(box["x_max"]),
+                "box_y_max": int(box["y_max"]),
+            }
+            if source_has_state:
+                state_json = json.dumps({"lines": list(state_lines_full)}, ensure_ascii=False, separators=(",", ":"))
+                prompt_text = format_prompt_text(prompt_fields, state_json=state_json)
+                row = make_state_record(
+                    sample_id=sample_id,
+                    image_rel_path=image_rel_path,
+                    prompt_text=prompt_text,
+                    target_lines=target_lines,
+                    state_lines=state_lines_full,
+                    system_prompt=system_prompt,
+                )
+            else:
+                prompt_text = format_prompt_text(prompt_fields)
+                row = make_record(
+                    sample_id=sample_id,
+                    image_rel_path=image_rel_path,
+                    prompt_text=prompt_text,
+                    target_lines=target_lines,
+                    system_prompt=system_prompt,
+                )
             meta = {
                 "id": sample_id,
                 "source_id": source_id,
@@ -606,6 +652,7 @@ def build_split(
                 "crop_box": crop_box,
                 "target_mode": "fixed_grid_target_box_map",
                 "coord_system": src_meta.get("coord_system", "patch_local_896"),
+                "source_dataset_type": "state" if source_has_state else "patch_only",
                 "serialization_mode": src_meta.get("serialization_mode", "paper_structured"),
                 "line_direction_mode": src_meta.get("line_direction_mode", "canonical_cut_then_origin"),
                 "line_sort_mode": src_meta.get("line_sort_mode", "first_point_distance_to_patch_origin"),
@@ -629,6 +676,8 @@ def build_split(
                 "anchor_start_xy": [int(prompt_info["start_x"]), int(prompt_info["start_y"])],
                 "anchor_end_xy": [int(prompt_info["end_x"]), int(prompt_info["end_y"])],
                 "anchor_piece_points": prompt_info["anchor_piece_points"],
+                "num_state_lines": int(len(state_lines_full)),
+                "state_lines": state_lines_full,
                 "num_target_lines": len(target_lines),
                 "num_target_points": int(sum(len(x.get("points", [])) for x in target_lines)),
                 "prompt_text": prompt_text,
@@ -699,48 +748,62 @@ def build_dataset_info(output_root: Path, splits: Sequence[str]) -> Dict[str, Di
     return info
 
 
-def main() -> None:
-    args = parse_args()
-    if int(args.grid_size) <= 0:
+def build_fixed_grid_targetbox_dataset(
+    input_root: Path,
+    output_root: Path,
+    splits: Sequence[str],
+    grid_size: int,
+    target_empty_ratio: float,
+    seed: int,
+    max_source_samples_per_split: int,
+    boundary_tol_px: float,
+    resample_step_px: float,
+    reuse_system_prompt: bool,
+    image_root_mode: str,
+    export_visualizations: bool,
+    max_visualizations_per_split: int,
+) -> Dict[str, object]:
+    if int(grid_size) <= 0:
         raise ValueError("--grid-size must be positive.")
-    if not (0.0 <= float(args.target_empty_ratio) <= 1.0):
+    if not (0.0 <= float(target_empty_ratio) <= 1.0):
         raise ValueError("--target-empty-ratio must be in [0, 1]. Use 1.0 to keep all empty boxes.")
 
-    input_root = args.input_root.resolve()
-    output_root = args.output_root.resolve()
+    input_root = Path(input_root).resolve()
+    output_root = Path(output_root).resolve()
     ensure_dir(output_root)
 
-    image_mode = link_or_copy_images(input_root=input_root, output_root=output_root, mode=str(args.image_root_mode))
-    rng = random.Random(int(args.seed))
+    image_mode = link_or_copy_images(input_root=input_root, output_root=output_root, mode=str(image_root_mode))
+    rng = random.Random(int(seed))
 
     summary: Dict[str, object] = {
         "input_root": str(input_root),
         "output_root": str(output_root),
-        "grid_size": int(args.grid_size),
-        "num_boxes_per_patch": int(args.grid_size) * int(args.grid_size),
-        "target_empty_ratio": float(args.target_empty_ratio),
-        "seed": int(args.seed),
+        "grid_size": int(grid_size),
+        "num_boxes_per_patch": int(grid_size) * int(grid_size),
+        "target_empty_ratio": float(target_empty_ratio),
+        "seed": int(seed),
         "image_root_mode": image_mode,
         "splits": {},
     }
 
-    for split in [str(x) for x in args.splits]:
+    split_list = [str(x) for x in splits]
+    for split in split_list:
         summary["splits"][split] = build_split(
             split=split,
             input_root=input_root,
             output_root=output_root,
-            grid_size=int(args.grid_size),
-            target_empty_ratio=float(args.target_empty_ratio),
+            grid_size=int(grid_size),
+            target_empty_ratio=float(target_empty_ratio),
             rng=rng,
-            max_source_samples_per_split=int(args.max_source_samples_per_split),
-            boundary_tol_px=float(args.boundary_tol_px),
-            resample_step_px=float(args.resample_step_px),
-            reuse_system_prompt=bool(args.use_system_prompt_from_source),
-            export_visualizations=bool(args.export_visualizations),
-            max_visualizations_per_split=int(args.max_visualizations_per_split),
+            max_source_samples_per_split=int(max_source_samples_per_split),
+            boundary_tol_px=float(boundary_tol_px),
+            resample_step_px=float(resample_step_px),
+            reuse_system_prompt=bool(reuse_system_prompt),
+            export_visualizations=bool(export_visualizations),
+            max_visualizations_per_split=int(max_visualizations_per_split),
         )
 
-    dataset_info = build_dataset_info(output_root=output_root, splits=[str(x) for x in args.splits])
+    dataset_info = build_dataset_info(output_root=output_root, splits=split_list)
     (output_root / "dataset_info.json").write_text(
         json.dumps(dataset_info, ensure_ascii=False, indent=2),
         encoding="utf-8",
@@ -748,6 +811,26 @@ def main() -> None:
     (output_root / "build_summary.json").write_text(
         json.dumps(summary, ensure_ascii=False, indent=2),
         encoding="utf-8",
+    )
+    return summary
+
+
+def main() -> None:
+    args = parse_args()
+    summary = build_fixed_grid_targetbox_dataset(
+        input_root=args.input_root,
+        output_root=args.output_root,
+        splits=[str(x) for x in args.splits],
+        grid_size=int(args.grid_size),
+        target_empty_ratio=float(args.target_empty_ratio),
+        seed=int(args.seed),
+        max_source_samples_per_split=int(args.max_source_samples_per_split),
+        boundary_tol_px=float(args.boundary_tol_px),
+        resample_step_px=float(args.resample_step_px),
+        reuse_system_prompt=bool(args.use_system_prompt_from_source),
+        image_root_mode=str(args.image_root_mode),
+        export_visualizations=bool(args.export_visualizations),
+        max_visualizations_per_split=int(args.max_visualizations_per_split),
     )
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 
