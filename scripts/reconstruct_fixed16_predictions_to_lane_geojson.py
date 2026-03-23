@@ -148,6 +148,75 @@ def build_prediction_index(prediction_rows: Sequence[Dict], meta_rows: Sequence[
     return by_id, fallback_index, parse_count
 
 
+def resolve_family_manifest_path(fixed16_root: Path, family_manifest_arg: str) -> Optional[Path]:
+    if str(family_manifest_arg).strip():
+        path = Path(str(family_manifest_arg).strip()).resolve()
+        return path if path.is_file() else None
+    candidate = (fixed16_root.parent / "family_manifest.jsonl").resolve()
+    return candidate if candidate.is_file() else None
+
+
+def meta_source_sample_id(meta: Dict, family: Optional[Dict]) -> str:
+    direct = str(meta.get("source_sample_id", "")).strip()
+    if direct:
+        return direct
+    if family is not None:
+        family_value = str(family.get("source_sample_id", family.get("source_image", meta.get("family_id", "")))).strip()
+        if family_value:
+            return family_value
+    fallback = str(meta.get("source_id") or meta.get("family_id") or meta.get("id") or "").strip()
+    return fallback
+
+
+def meta_source_image_path(meta: Dict, family: Optional[Dict]) -> Optional[Path]:
+    direct = str(meta.get("source_image_path", "")).strip()
+    if direct:
+        path = Path(direct).resolve()
+        if path.is_file():
+            return path
+    if family is not None:
+        family_path = str(family.get("source_image_path", "")).strip()
+        if family_path:
+            path = Path(family_path).resolve()
+            if path.is_file():
+                return path
+    return None
+
+
+def collect_prediction_targets(
+    meta_rows: Sequence[Dict],
+    prediction_rows: Sequence[Dict],
+    pred_by_id: Dict[str, List[Dict]],
+    fallback_index: Dict[str, int],
+) -> Tuple[List[Tuple[Dict, List[Dict]]], int, int, List[str], str]:
+    meta_by_id = {str(meta.get("id")): meta for meta in meta_rows}
+    matched: List[Tuple[Dict, List[Dict]]] = []
+    unmatched_prediction_ids: List[str] = []
+
+    if pred_by_id:
+        for meta in meta_rows:
+            meta_id = str(meta.get("id"))
+            if meta_id in pred_by_id:
+                matched.append((meta, pred_by_id[meta_id]))
+        for pred_id in sorted(pred_by_id.keys()):
+            if pred_id not in meta_by_id:
+                unmatched_prediction_ids.append(pred_id)
+        return matched, len(matched), 0, unmatched_prediction_ids, "by_id"
+
+    if fallback_index:
+        missing_predictions = 0
+        for meta in meta_rows:
+            meta_id = str(meta.get("id"))
+            if meta_id not in fallback_index:
+                missing_predictions += 1
+                continue
+            pred_lines = extract_prediction_lines(prediction_rows[fallback_index[meta_id]])
+            matched.append((meta, pred_lines))
+        return matched, len(matched), missing_predictions, [], "fallback_by_order"
+
+    return matched, 0, int(len(meta_rows)), [], "no_match"
+
+
 def clip_pred_lines_to_target_box(pred_lines: Sequence[Dict], target_box: Dict[str, int], boundary_tol_px: float) -> List[Dict]:
     rect = (
         float(target_box["x_min"]),
@@ -328,43 +397,42 @@ def main() -> None:
     output_root = Path(args.output_root).resolve()
     ensure_dir(output_root)
 
-    family_manifest = Path(args.family_manifest).resolve() if str(args.family_manifest).strip() else (fixed16_root.parent / "family_manifest.jsonl")
     meta_path = fixed16_root / f"meta_{args.split}.jsonl"
     if not meta_path.is_file():
         raise FileNotFoundError(f"Missing fixed16 meta file: {meta_path}")
-    if not family_manifest.is_file():
-        raise FileNotFoundError(f"Missing family manifest: {family_manifest}")
     if not predictions_path.is_file():
         raise FileNotFoundError(f"Missing predictions file: {predictions_path}")
 
-    manifest_rows = load_jsonl(family_manifest)
-    manifest_map = {str(row["family_id"]): row for row in manifest_rows}
+    family_manifest = resolve_family_manifest_path(fixed16_root=fixed16_root, family_manifest_arg=str(args.family_manifest))
+    manifest_rows = load_jsonl(family_manifest) if family_manifest is not None else []
+    manifest_map = {str(row["family_id"]): row for row in manifest_rows if isinstance(row, dict) and str(row.get("family_id", "")).strip()}
     meta_rows = load_jsonl(meta_path)
     prediction_rows = load_prediction_rows(predictions_path)
     pred_by_id, fallback_index, parse_count = build_prediction_index(prediction_rows, meta_rows)
+    matched_items, matched_predictions, missing_predictions, unmatched_prediction_ids, match_mode = collect_prediction_targets(
+        meta_rows=meta_rows,
+        prediction_rows=prediction_rows,
+        pred_by_id=pred_by_id,
+        fallback_index=fallback_index,
+    )
 
     grouped_global_lines: Dict[str, List[Dict]] = defaultdict(list)
-    grouped_manifest: Dict[str, Dict] = {}
-    matched_predictions = 0
-    missing_predictions = 0
+    grouped_family: Dict[str, Optional[Dict]] = {}
+    grouped_source_image_path: Dict[str, Path] = {}
     raw_piece_count = 0
+    skipped_missing_source_image = 0
 
-    for idx, meta in enumerate(meta_rows):
+    for meta, pred_lines in matched_items:
         family = manifest_map.get(str(meta.get("family_id")))
-        if family is None:
-            continue
-        source_sample_id = str(family.get("source_sample_id", family.get("source_image", meta.get("family_id"))))
+        source_sample_id = meta_source_sample_id(meta=meta, family=family)
         if str(args.source_sample_id).strip() and source_sample_id != str(args.source_sample_id).strip():
             continue
-        grouped_manifest[source_sample_id] = family
-
-        pred_lines = pred_by_id.get(str(meta.get("id")))
-        if pred_lines is None and str(meta.get("id")) in fallback_index:
-            pred_lines = extract_prediction_lines(prediction_rows[fallback_index[str(meta.get("id"))]])
-        if pred_lines is None:
-            missing_predictions += 1
+        source_image_path = meta_source_image_path(meta=meta, family=family)
+        if source_image_path is None:
+            skipped_missing_source_image += 1
             continue
-        matched_predictions += 1
+        grouped_family[source_sample_id] = family
+        grouped_source_image_path[source_sample_id] = source_image_path
         clipped_local_lines = clip_pred_lines_to_target_box(
             pred_lines=pred_lines,
             target_box=dict(meta.get("target_box", {})),
@@ -384,8 +452,8 @@ def main() -> None:
 
     summary: List[Dict] = []
     for sample_id in sample_ids:
-        family = grouped_manifest[sample_id]
-        source_image_path = Path(str(family["source_image_path"])).resolve()
+        family = grouped_family.get(sample_id)
+        source_image_path = grouped_source_image_path[sample_id]
         with rasterio_open(source_image_path) as ds:
             transform = ds.transform
             crs_name = str(ds.crs) if ds.crs is not None else "urn:ogc:def:crs:OGC:1.3:CRS84"
@@ -409,6 +477,7 @@ def main() -> None:
             {
                 "source_sample_id": sample_id,
                 "source_image_path": str(source_image_path),
+                "family_id": "" if family is None else str(family.get("family_id", "")),
                 "raw_piece_count": len(raw_lines),
                 "merged_lane_count": len(merged_lines),
                 "lane_geojson_path": str(lane_path),
@@ -422,12 +491,16 @@ def main() -> None:
             {
                 "fixed16_root": str(fixed16_root),
                 "predictions_path": str(predictions_path),
-                "family_manifest": str(family_manifest),
+                "family_manifest": "" if family_manifest is None else str(family_manifest),
                 "split": str(args.split),
+                "prediction_match_mode": str(match_mode),
                 "matched_predictions": int(matched_predictions),
                 "missing_predictions": int(missing_predictions),
+                "unmatched_prediction_ids": unmatched_prediction_ids,
                 "parsed_prediction_rows": int(parse_count),
                 "raw_piece_count": int(raw_piece_count),
+                "stitched_sample_count": int(len(summary)),
+                "skipped_missing_source_image": int(skipped_missing_source_image),
                 "samples": summary,
             },
             f,
