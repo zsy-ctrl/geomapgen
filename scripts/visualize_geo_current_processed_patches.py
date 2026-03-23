@@ -11,8 +11,8 @@ from reconstruct_geo_current_from_processed_dataset import (
     annotate_patch_endpoint_order_labels,
     build_overlay_image,
     ensure_dir,
+    infer_source_sample_id,
     load_dataset_image_map,
-    load_manifest_map,
 )
 from geo_current_dataset_v1_common import load_jsonl, uv_lines_to_local
 
@@ -25,7 +25,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-root", type=str, required=True)
     parser.add_argument("--split", type=str, default="train", choices=["train", "val"])
     parser.add_argument("--stage", type=str, default="stage_a", choices=["stage_a", "stage_b"])
-    parser.add_argument("--family-manifest", type=str, default="")
     parser.add_argument("--source-sample-id", type=str, default="")
     parser.add_argument("--max-samples", type=int, default=0)
     parser.add_argument("--max-patches-per-sample", type=int, default=0)
@@ -59,25 +58,16 @@ def main() -> None:
     output_root = Path(args.output_root).resolve()
     ensure_dir(output_root)
 
-    family_manifest = (
-        Path(args.family_manifest).resolve()
-        if str(args.family_manifest).strip()
-        else processed_root / "family_manifest.jsonl"
-    )
     dataset_root = processed_root / str(args.stage) / "dataset"
     meta_path = dataset_root / f"meta_{args.split}.jsonl"
     rows_path = dataset_root / f"{args.split}.jsonl"
 
-    manifest_map = load_manifest_map(family_manifest)
     meta_rows = load_jsonl(meta_path)
     image_map = load_dataset_image_map(rows_path)
 
     grouped: Dict[str, List[Dict]] = defaultdict(list)
     for row in meta_rows:
-        family = manifest_map.get(str(row["family_id"]))
-        if family is None:
-            continue
-        sample_id = str(family.get("source_sample_id", family.get("source_image", row["family_id"])))
+        sample_id = infer_source_sample_id(family_id=str(row.get("family_id", "")), row=row, family=None)
         if str(args.source_sample_id).strip() and sample_id != str(args.source_sample_id).strip():
             continue
         grouped[sample_id].append(row)

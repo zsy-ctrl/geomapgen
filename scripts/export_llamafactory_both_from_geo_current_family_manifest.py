@@ -139,37 +139,45 @@ def export_families_to_stage_datasets(
     stageb_system_prompt: str,
     stageb_prompt_template: str,
 ) -> Dict[str, object]:
+    #创建输出目录
     output_root = Path(output_root).resolve()
     stage_a_root = output_root / "stage_a" / "dataset"
     stage_b_root = output_root / "stage_b" / "dataset"
     ensure_dir(stage_a_root)
     ensure_dir(stage_b_root)
-
+    #初始化 split 相关容器
     split_set = {str(split) for split in splits}
     split_records: Dict[str, List[Dict]] = {str(split): [] for split in splits}
     family_seen: Dict[str, int] = {str(split): 0 for split in splits}
     family_exported: Dict[str, int] = {str(split): 0 for split in splits}
-
+    #遍历每个 family
     for family in families:
         split = str(family.get("split"))
+        #过滤 split 和数量限制
         if split not in split_set:
             continue
+        #统计看到了多少 family
+        #如果限制了每个 split 最大导出 family 数量，就超过后跳过
+        #真正导出的才记到 family_exported
         family_seen[split] += 1
         if int(max_families_per_split) > 0 and family_seen[split] > int(max_families_per_split):
             continue
         family_exported[split] += 1
-
+        #读取 family 的大图元数据和 mask，并把 mask 外的图像区域置黑
         raw_image_hwc, raster_meta, review_mask = load_family_raster_and_mask(
             family=family,
             band_indices=[int(x) for x in band_indices],
             mask_threshold=int(mask_threshold),
         )
+        #根据一个 family，把这张原始大图对应的 Lane.geojson 和 Intersection.geojson 读出来
+        #转换成“整图像素坐标系下的全局几何线/面”列表
         global_lines = family_global_lines(
             family=family,
             raster_meta=raster_meta,
             include_lane=bool(include_lane),
             include_intersection=bool(include_intersection_boundary),
         )
+        #把整图真值切成每个patch真正拥有的那部分线/路口
         owned_segments_by_patch = build_owned_segments_by_patch(
             family=family,
             global_lines=global_lines,
@@ -206,7 +214,13 @@ def export_families_to_stage_datasets(
                 "id": sample_id,
                 "split": split,
                 "family_id": family["family_id"],
+                "source_sample_id": family.get("source_sample_id", ""),
                 "source_image": family["source_image"],
+                "source_image_path": family.get("source_image_path", ""),
+                "source_mask_path": family.get("source_mask_path", ""),
+                "source_lane_path": family.get("source_lane_path", ""),
+                "source_intersection_path": family.get("source_intersection_path", ""),
+                "image_size": family.get("image_size", []),
                 "patch_id": patch_id,
                 "row": int(patch["row"]),
                 "col": int(patch["col"]),
@@ -260,7 +274,13 @@ def export_families_to_stage_datasets(
                 "id": sample_id,
                 "split": split,
                 "family_id": family["family_id"],
+                "source_sample_id": family.get("source_sample_id", ""),
                 "source_image": family["source_image"],
+                "source_image_path": family.get("source_image_path", ""),
+                "source_mask_path": family.get("source_mask_path", ""),
+                "source_lane_path": family.get("source_lane_path", ""),
+                "source_intersection_path": family.get("source_intersection_path", ""),
+                "image_size": family.get("image_size", []),
                 "patch_id": patch_id,
                 "row": int(patch["row"]),
                 "col": int(patch["col"]),

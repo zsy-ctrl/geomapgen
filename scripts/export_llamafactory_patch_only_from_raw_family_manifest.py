@@ -80,13 +80,18 @@ def normalize_opensatmap_category(name: str) -> str:
         return "curb"
     return value.replace(" ", "_")
 
-
+#去掉相邻的重复点或几乎重复的点
 def dedup_points(points: Sequence[np.ndarray], eps: float = 1e-3) -> np.ndarray:
+    #把输入转成numpy数组
     arr = np.asarray(points, dtype=np.float32)
+    #检查输入是否为合法二维点列
     if arr.ndim != 2 or arr.shape[0] == 0:
         return np.zeros((0, 2), dtype=np.float32)
+    #先保留第一个点
     out = [arr[0]]
+    #从第二个点开始遍历
     for idx in range(1, arr.shape[0]):
+        #判断当前点和上一个保留点的距离
         if float(np.linalg.norm(arr[idx] - out[-1])) > float(eps):
             out.append(arr[idx])
     return np.asarray(out, dtype=np.float32)

@@ -1,8 +1,9 @@
 import argparse
 import json
+import math
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, Iterable, List, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
@@ -17,6 +18,22 @@ def ensure_dir(path: Path) -> None:
 
 def load_manifest_map(path: Path) -> Dict[str, Dict]:
     return {str(row["family_id"]): row for row in load_jsonl(path)}
+
+
+def infer_source_sample_id(family_id: str, row: Optional[Dict] = None, family: Optional[Dict] = None) -> str:
+    if isinstance(row, dict):
+        value = str(row.get("source_sample_id", "")).strip()
+        if value:
+            return value
+    if isinstance(family, dict):
+        value = str(family.get("source_sample_id", "")).strip()
+        if value:
+            return value
+    fid = str(family_id).strip()
+    for marker in ("__geo_current_", "__paper", "__family", "__"):
+        if marker in fid:
+            return fid.split(marker, 1)[0]
+    return fid
 
 
 def load_dataset_image_map(path: Path) -> Dict[str, str]:
@@ -48,6 +65,48 @@ def build_feature_collection(features: List[Dict], crs_name: str, name: str) -> 
             "properties": {"name": str(crs_name)},
         },
         "features": features,
+    }
+
+
+def resolve_sample_raster_context(rows: List[Dict], family: Optional[Dict]) -> Dict:
+    source_image_path = ""
+    if isinstance(family, dict):
+        source_image_path = str(family.get("source_image_path", "")).strip()
+    if not source_image_path:
+        for row in rows:
+            candidate = str(row.get("source_image_path", "")).strip()
+            if candidate:
+                source_image_path = candidate
+                break
+
+    if source_image_path:
+        source_path = Path(source_image_path).resolve()
+        if source_path.is_file():
+            with rasterio_open(source_path) as ds:
+                return {
+                    "width": int(ds.width),
+                    "height": int(ds.height),
+                    "profile": ds.profile.copy(),
+                    "transform": ds.transform,
+                    "crs_name": str(ds.crs) if ds.crs is not None else "urn:ogc:def:crs:OGC:1.3:CRS84",
+                    "source_image_path": str(source_path),
+                    "georeferenced": True,
+                }
+
+    width = 0
+    height = 0
+    for row in rows:
+        crop_box = row.get("crop_box", {})
+        width = max(width, int(crop_box.get("x_max", 0)))
+        height = max(height, int(crop_box.get("y_max", 0)))
+    return {
+        "width": max(1, int(width)),
+        "height": max(1, int(height)),
+        "profile": None,
+        "transform": None,
+        "crs_name": "LOCAL_PIXEL",
+        "source_image_path": str(source_image_path).strip(),
+        "georeferenced": False,
     }
 
 
@@ -103,6 +162,148 @@ def _line_color_compare(kind: str) -> Tuple[int, int, int]:
     return (255, 80, 255)
 
 
+def _endpoint_color(endpoint_type: str) -> Tuple[int, int, int]:
+    endpoint_type = str(endpoint_type).strip().lower()
+    if endpoint_type == "cut":
+        return (255, 60, 60)
+    if endpoint_type == "end":
+        return (255, 220, 0)
+    return (0, 255, 0)
+
+
+def _distance_xy(a: Tuple[float, float], b: Tuple[float, float]) -> float:
+    dx = float(a[0]) - float(b[0])
+    dy = float(a[1]) - float(b[1])
+    return math.hypot(dx, dy)
+
+
+def _spread_endpoint_positions(
+    visual_lines: List[Dict],
+    cluster_dist_px: float = 14.0,
+    base_offset_px: float = 14.0,
+) -> Dict[Tuple[int, str], Tuple[float, float]]:
+    endpoints: List[Dict] = []
+    for line_idx, row in enumerate(visual_lines):
+        if str(row.get("geometry_type", "line")) == "polygon":
+            continue
+        points = row.get("points", [])
+        if not isinstance(points, list) or len(points) < 2:
+            continue
+        endpoints.append(
+            {
+                "line_idx": int(line_idx),
+                "endpoint_key": "start",
+                "point": (float(points[0][0]), float(points[0][1])),
+            }
+        )
+        endpoints.append(
+            {
+                "line_idx": int(line_idx),
+                "endpoint_key": "end",
+                "point": (float(points[-1][0]), float(points[-1][1])),
+            }
+        )
+
+    clusters: List[List[Dict]] = []
+    for endpoint in endpoints:
+        assigned = False
+        for cluster in clusters:
+            anchor = cluster[0]["point"]
+            if _distance_xy(endpoint["point"], anchor) <= float(cluster_dist_px):
+                cluster.append(endpoint)
+                assigned = True
+                break
+        if not assigned:
+            clusters.append([endpoint])
+
+    out: Dict[Tuple[int, str], Tuple[float, float]] = {}
+    for cluster in clusters:
+        if len(cluster) == 1:
+            item = cluster[0]
+            out[(int(item["line_idx"]), str(item["endpoint_key"]))] = item["point"]
+            continue
+        ordered = sorted(
+            cluster,
+            key=lambda item: (
+                float(item["point"][0]) * float(item["point"][0]) + float(item["point"][1]) * float(item["point"][1]),
+                float(item["point"][1]),
+                float(item["point"][0]),
+            ),
+        )
+        count = len(ordered)
+        angle_step = (2.0 * math.pi) / float(max(1, count))
+        radius = float(base_offset_px) + max(0.0, float(count - 2) * 2.0)
+        for idx, item in enumerate(ordered):
+            angle = (math.pi / 2.0) + (float(idx) * angle_step)
+            px = float(item["point"][0]) + radius * math.cos(angle)
+            py = float(item["point"][1]) + radius * math.sin(angle)
+            out[(int(item["line_idx"]), str(item["endpoint_key"]))] = (px, py)
+    return out
+
+
+def _select_arrow_segment(xy: List[Tuple[int, int]]) -> Optional[Tuple[Tuple[float, float], Tuple[float, float]]]:
+    if len(xy) < 2:
+        return None
+    seg_lengths: List[float] = []
+    total = 0.0
+    for idx in range(len(xy) - 1):
+        length = _distance_xy(xy[idx], xy[idx + 1])
+        seg_lengths.append(length)
+        total += length
+    if total <= 1e-6:
+        return None
+    target = total * 0.6
+    accum = 0.0
+    for idx, length in enumerate(seg_lengths):
+        next_accum = accum + length
+        if length > 1.0 and target <= next_accum:
+            return (
+                (float(xy[idx][0]), float(xy[idx][1])),
+                (float(xy[idx + 1][0]), float(xy[idx + 1][1])),
+            )
+        accum = next_accum
+    for idx in range(len(seg_lengths) - 1, -1, -1):
+        if seg_lengths[idx] > 1.0:
+            return (
+                (float(xy[idx][0]), float(xy[idx][1])),
+                (float(xy[idx + 1][0]), float(xy[idx + 1][1])),
+            )
+    return None
+
+
+def _draw_direction_arrow(draw: ImageDraw.ImageDraw, xy: List[Tuple[int, int]], color: Tuple[int, int, int]) -> None:
+    segment = _select_arrow_segment(xy)
+    if segment is None:
+        return
+    start_xy, end_xy = segment
+    dx = float(end_xy[0]) - float(start_xy[0])
+    dy = float(end_xy[1]) - float(start_xy[1])
+    seg_len = math.hypot(dx, dy)
+    if seg_len <= 1e-6:
+        return
+    ux = dx / seg_len
+    uy = dy / seg_len
+    arrow_tip = (
+        float(start_xy[0]) + 0.72 * dx,
+        float(start_xy[1]) + 0.72 * dy,
+    )
+    arrow_base = (
+        float(arrow_tip[0]) - 10.0 * ux,
+        float(arrow_tip[1]) - 10.0 * uy,
+    )
+    perp = (-uy, ux)
+    wing1 = (
+        float(arrow_base[0]) + 4.0 * perp[0],
+        float(arrow_base[1]) + 4.0 * perp[1],
+    )
+    wing2 = (
+        float(arrow_base[0]) - 4.0 * perp[0],
+        float(arrow_base[1]) - 4.0 * perp[1],
+    )
+    draw.line((arrow_base, arrow_tip), fill=color, width=3)
+    draw.polygon([arrow_tip, wing1, wing2], fill=color)
+
+
 def build_overlay_image(
     canvas: np.ndarray,
     visual_lines: List[Dict],
@@ -112,6 +313,7 @@ def build_overlay_image(
     image = Image.fromarray(canvas, mode="RGB")
     draw = ImageDraw.Draw(image)
     font = ImageFont.load_default()
+    endpoint_positions = _spread_endpoint_positions(visual_lines)
 
     for keep_box in list(keep_boxes or []):
         x_min = int(round(float(keep_box.get("x_min", 0))))
@@ -122,7 +324,7 @@ def build_overlay_image(
         draw.rectangle((x_min, y_min, x_max, y_max), outline=(255, 255, 255), width=2)
         draw.text((x_min + 4, max(0, y_min - 12)), label, fill=(255, 255, 255), font=font)
 
-    for row in visual_lines:
+    for line_idx, row in enumerate(visual_lines):
         points = row.get("points", [])
         if not isinstance(points, list) or len(points) < 2:
             continue
@@ -141,29 +343,55 @@ def build_overlay_image(
             draw.text((first_xy[0] + 6, first_xy[1] - 10), label, fill=color, font=font)
             continue
         draw.line(xy, fill=color, width=3)
+        _draw_direction_arrow(draw, xy, color)
 
         start_xy = xy[0]
         end_xy = xy[-1]
         start_type = str(row.get("start_type", "")).strip() or "start"
         end_type = str(row.get("end_type", "")).strip() or "end"
+        start_display = endpoint_positions.get((int(line_idx), "start"), (float(start_xy[0]), float(start_xy[1])))
+        end_display = endpoint_positions.get((int(line_idx), "end"), (float(end_xy[0]), float(end_xy[1])))
+        if _distance_xy(start_display, start_xy) > 1.0:
+            draw.line((start_xy, start_display), fill=_endpoint_color(start_type), width=2)
+        if _distance_xy(end_display, end_xy) > 1.0:
+            draw.line((end_xy, end_display), fill=_endpoint_color(end_type), width=2)
 
         start_r = 5
         end_r = 5
         draw.ellipse(
-            (start_xy[0] - start_r, start_xy[1] - start_r, start_xy[0] + start_r, start_xy[1] + start_r),
-            fill=(0, 255, 0),
+            (
+                float(start_display[0]) - start_r,
+                float(start_display[1]) - start_r,
+                float(start_display[0]) + start_r,
+                float(start_display[1]) + start_r,
+            ),
+            fill=_endpoint_color(start_type),
             outline=(0, 0, 0),
         )
         draw.ellipse(
-            (end_xy[0] - end_r, end_xy[1] - end_r, end_xy[0] + end_r, end_xy[1] + end_r),
-            fill=(255, 80, 80),
+            (
+                float(end_display[0]) - end_r,
+                float(end_display[1]) - end_r,
+                float(end_display[0]) + end_r,
+                float(end_display[1]) + end_r,
+            ),
+            fill=_endpoint_color(end_type),
             outline=(0, 0, 0),
         )
-        if color_mode == "category":
-            start_label = str(row.get("start_label", start_type))
-            end_label = str(row.get("end_label", end_type))
-            draw.text((start_xy[0] + 6, start_xy[1] - 10), start_label, fill=(0, 255, 0), font=font)
-            draw.text((end_xy[0] + 6, end_xy[1] - 10), end_label, fill=(255, 80, 80), font=font)
+        start_label = str(row.get("start_label", start_type))
+        end_label = str(row.get("end_label", end_type))
+        draw.text(
+            (float(start_display[0]) + 6, float(start_display[1]) - 10),
+            start_label,
+            fill=_endpoint_color(start_type),
+            font=font,
+        )
+        draw.text(
+            (float(end_display[0]) + 6, float(end_display[1]) - 10),
+            end_label,
+            fill=_endpoint_color(end_type),
+            font=font,
+        )
     return image
 
 
@@ -187,12 +415,16 @@ def main() -> None:
     output_root = Path(args.output_root).resolve()
     ensure_dir(output_root)
 
-    family_manifest = Path(args.family_manifest).resolve() if str(args.family_manifest).strip() else processed_root / "family_manifest.jsonl"
     dataset_root = processed_root / str(args.stage) / "dataset"
     meta_path = dataset_root / f"meta_{args.split}.jsonl"
     rows_path = dataset_root / f"{args.split}.jsonl"
 
-    manifest_map = load_manifest_map(family_manifest)
+    family_manifest = Path(args.family_manifest).resolve() if str(args.family_manifest).strip() else processed_root / "family_manifest.jsonl"
+    manifest_map: Dict[str, Dict] = {}
+    manifest_mode = "missing"
+    if family_manifest.is_file():
+        manifest_map = load_manifest_map(family_manifest)
+        manifest_mode = str(family_manifest)
     meta_rows = load_jsonl(meta_path)
     image_map = load_dataset_image_map(rows_path)
 
@@ -200,13 +432,12 @@ def main() -> None:
     source_meta: Dict[str, Dict] = {}
     for row in meta_rows:
         family = manifest_map.get(str(row["family_id"]))
-        if family is None:
-            continue
-        sample_id = str(family.get("source_sample_id", family.get("source_image", row["family_id"])))
+        sample_id = infer_source_sample_id(family_id=str(row.get("family_id", "")), row=row, family=family)
         if str(args.source_sample_id).strip() and sample_id != str(args.source_sample_id).strip():
             continue
         grouped[sample_id].append(row)
-        source_meta[sample_id] = family
+        if family is not None:
+            source_meta[sample_id] = family
 
     sample_ids = sorted(grouped.keys())
     if int(args.max_samples) > 0:
@@ -214,18 +445,20 @@ def main() -> None:
 
     summary: List[Dict] = []
     for sample_id in sample_ids:
-        family = source_meta[sample_id]
-        source_image_path = Path(str(family["source_image_path"])).resolve()
-        with rasterio_open(source_image_path) as ds:
-            width = int(ds.width)
-            height = int(ds.height)
-            profile = ds.profile.copy()
-            transform = ds.transform
-            crs_name = str(ds.crs) if ds.crs is not None else "urn:ogc:def:crs:OGC:1.3:CRS84"
+        family = source_meta.get(sample_id)
+        raster_context = resolve_sample_raster_context(rows=grouped[sample_id], family=family)
+        width = int(raster_context["width"])
+        height = int(raster_context["height"])
+        profile = raster_context["profile"]
+        transform = raster_context["transform"]
+        crs_name = str(raster_context["crs_name"])
+        source_image_path = Path(str(raster_context.get("source_image_path", "")).strip()).resolve() if str(raster_context.get("source_image_path", "")).strip() else None
 
         canvas = np.zeros((height, width, 3), dtype=np.uint8)
         lane_features: List[Dict] = []
         inter_features: List[Dict] = []
+        lane_features_pixel: List[Dict] = []
+        inter_features_pixel: List[Dict] = []
         visual_lines: List[Dict] = []
         visual_lines_float: List[Dict] = []
         seen_lane = set()
@@ -273,9 +506,12 @@ def main() -> None:
                 )
                 geometry_type = str(line.get("geometry_type", "line"))
                 if str(line.get("category", "")) == "intersection_polygon":
-                    ring_world = pixel_to_world(global_points, transform)
+                    ring_world = global_points if transform is None else pixel_to_world(global_points, transform)
                     if len(ring_world) >= 3 and ring_world[0] != ring_world[-1]:
                         ring_world.append(list(ring_world[0]))
+                    ring_pixel = [[float(p[0]), float(p[1])] for p in global_points]
+                    if len(ring_pixel) >= 3 and ring_pixel[0] != ring_pixel[-1]:
+                        ring_pixel.append(list(ring_pixel[0]))
                     feature = {
                         "type": "Feature",
                         "properties": {
@@ -287,7 +523,19 @@ def main() -> None:
                             "coordinates": [ring_world],
                         },
                     }
+                    feature_pixel = {
+                        "type": "Feature",
+                        "properties": {
+                            "category": str(line.get("category", "")),
+                            "geometry_type": geometry_type,
+                        },
+                        "geometry": {
+                            "type": "Polygon",
+                            "coordinates": [ring_pixel],
+                        },
+                    }
                 else:
+                    line_world = global_points if transform is None else pixel_to_world(global_points, transform)
                     feature = {
                         "type": "Feature",
                         "properties": {
@@ -298,17 +546,32 @@ def main() -> None:
                         },
                         "geometry": {
                             "type": "LineString",
-                            "coordinates": pixel_to_world(global_points, transform),
+                            "coordinates": line_world,
+                        },
+                    }
+                    feature_pixel = {
+                        "type": "Feature",
+                        "properties": {
+                            "category": str(line.get("category", "")),
+                            "start_type": str(line.get("start_type", "")),
+                            "end_type": str(line.get("end_type", "")),
+                            "geometry_type": geometry_type,
+                        },
+                        "geometry": {
+                            "type": "LineString",
+                            "coordinates": [[float(p[0]), float(p[1])] for p in global_points],
                         },
                     }
                 if str(line.get("category", "")) == "intersection_polygon":
                     if key not in seen_inter:
                         seen_inter.add(key)
                         inter_features.append(feature)
+                        inter_features_pixel.append(feature_pixel)
                 else:
                     if key not in seen_lane:
                         seen_lane.add(key)
                         lane_features.append(feature)
+                        lane_features_pixel.append(feature_pixel)
 
             patch_visual_lines: List[Dict] = []
             visual_quantized_source = row.get("target_lines_quantized", [])
@@ -355,44 +618,63 @@ def main() -> None:
             visual_lines_float.extend(annotate_patch_endpoint_order_labels(patch_visual_lines_float))
 
         tif_path = sample_out / "masked_reconstructed.tif"
+        png_path = sample_out / "masked_reconstructed.png"
         overlay_path = sample_out / "masked_reconstructed_overlay.png"
         overlay_float_path = sample_out / "masked_reconstructed_overlay_float.png"
         overlay_compare_path = sample_out / "masked_reconstructed_overlay_compare.png"
-        out_profile = profile.copy()
-        out_profile.update(count=3, dtype="uint8")
-        with rasterio_open(tif_path, "w", **out_profile) as dst:
-            dst.write(np.transpose(canvas, (2, 0, 1)))
+        Image.fromarray(canvas, mode="RGB").save(png_path)
+        if isinstance(profile, dict):
+            out_profile = profile.copy()
+            out_profile.update(count=3, dtype="uint8")
+            with rasterio_open(tif_path, "w", **out_profile) as dst:
+                dst.write(np.transpose(canvas, (2, 0, 1)))
+        else:
+            Image.fromarray(canvas, mode="RGB").save(tif_path)
         build_overlay_image(canvas=canvas, visual_lines=visual_lines).save(overlay_path)
         build_overlay_image(canvas=canvas, visual_lines=visual_lines_float, color_mode="compare").save(overlay_float_path)
         build_overlay_image(canvas=canvas, visual_lines=[*visual_lines_float, *visual_lines], color_mode="compare").save(overlay_compare_path)
 
         lane_geojson = build_feature_collection(lane_features, crs_name=crs_name, name="Lane")
         inter_geojson = build_feature_collection(inter_features, crs_name=crs_name, name="Intersection")
+        lane_pixel_geojson = build_feature_collection(lane_features_pixel, crs_name="LOCAL_PIXEL", name="LanePixel")
+        inter_pixel_geojson = build_feature_collection(inter_features_pixel, crs_name="LOCAL_PIXEL", name="IntersectionPixel")
         lane_path = sample_out / "Lane.geojson"
         inter_path = sample_out / "Intersection.geojson"
+        lane_pixel_path = sample_out / "Lane.pixel.geojson"
+        inter_pixel_path = sample_out / "Intersection.pixel.geojson"
         with lane_path.open("w", encoding="utf-8") as f:
             json.dump(lane_geojson, f, ensure_ascii=False, indent=2)
         with inter_path.open("w", encoding="utf-8") as f:
             json.dump(inter_geojson, f, ensure_ascii=False, indent=2)
+        with lane_pixel_path.open("w", encoding="utf-8") as f:
+            json.dump(lane_pixel_geojson, f, ensure_ascii=False, indent=2)
+        with inter_pixel_path.open("w", encoding="utf-8") as f:
+            json.dump(inter_pixel_geojson, f, ensure_ascii=False, indent=2)
 
         summary.append(
             {
                 "source_sample_id": sample_id,
-                "source_image_path": str(source_image_path),
+                "manifest_mode": manifest_mode,
+                "source_image_path": str(source_image_path) if source_image_path is not None else "",
+                "georeferenced": bool(raster_context.get("georeferenced", False)),
                 "patch_count": len(grouped[sample_id]),
                 "lane_feature_count": len(lane_features),
                 "intersection_polygon_count": len(inter_features),
+                "png_path": str(png_path),
                 "tif_path": str(tif_path),
                 "overlay_path": str(overlay_path),
                 "overlay_float_path": str(overlay_float_path),
                 "overlay_compare_path": str(overlay_compare_path),
                 "lane_geojson_path": str(lane_path),
                 "intersection_geojson_path": str(inter_path),
+                "lane_pixel_geojson_path": str(lane_pixel_path),
+                "intersection_pixel_geojson_path": str(inter_pixel_path),
             }
         )
         print(
             f"[Verify] sample={sample_id} patches={len(grouped[sample_id])} "
-            f"lane={len(lane_features)} inter={len(inter_features)} -> {sample_out}",
+            f"lane={len(lane_features)} inter={len(inter_features)} "
+            f"mode={manifest_mode} georef={bool(raster_context.get('georeferenced', False))} -> {sample_out}",
             flush=True,
         )
 
