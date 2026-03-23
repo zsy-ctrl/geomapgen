@@ -146,7 +146,8 @@ def point_in_rect(point_xy: np.ndarray, rect: Tuple[float, float, float, float],
     y = float(point_xy[1])
     return (x_min - eps) <= x <= (x_max + eps) and (y_min - eps) <= y <= (y_max + eps)
 
-
+#Liang-Barsky clipping 算法
+#给一条线段 p0 -> p1 和一个矩形 rect，算出这条线段落在矩形内部的那一段；如果完全不相交，就返回 None
 def clip_segment_liang_barsky(
     p0: np.ndarray,
     p1: np.ndarray,
@@ -179,30 +180,39 @@ def clip_segment_liang_barsky(
     c1 = np.asarray([p0[0] + u2 * dx, p0[1] + u2 * dy], dtype=np.float32)
     return c0, c1
 
-
+#把一条 polyline 按矩形 rect 裁开，返回落在矩形里面的一个或多个线段片段
 def clip_polyline_to_rect(points_xy: np.ndarray, rect: Tuple[float, float, float, float]) -> List[np.ndarray]:
+    #先把输入标准化
     pts = np.asarray(points_xy, dtype=np.float32)
     if pts.ndim != 2 or pts.shape[0] < 2:
         return []
+    #准备两个容器，放裁出的线段和当前在裁的线段
     pieces: List[np.ndarray] = []
     current: List[np.ndarray] = []
+    #遍历原 polyline 的每一小段
     for idx in range(pts.shape[0] - 1):
+        #把这一小段裁到矩形边框里看是否有相交，如果不相交返回None，有的话返回交点
         clipped = clip_segment_liang_barsky(pts[idx], pts[idx + 1], rect)
         if clipped is None:
             if len(current) >= 2:
                 pieces.append(dedup_points(current))
             current = []
             continue
+        #如果这一小段裁出来了，c0起点，c1是被裁断处的交点
         c0, c1 = clipped
+        #如果当前还没有在拼的片段，放入current
         if not current:
             current = [c0, c1]
+        #如果已经有当前片段了，就尝试接上
         else:
             if float(np.linalg.norm(current[-1] - c0)) <= 1e-3:
                 current.append(c1)
             else:
+                #如果接不上，说明这是新的一段,旧的一段直接放入pieces中
                 if len(current) >= 2:
                     pieces.append(dedup_points(current))
                 current = [c0, c1]
+        #如果原始线段的终点已经在矩形外面，要立即收尾
         if not point_in_rect(pts[idx + 1], rect):
             if len(current) >= 2:
                 pieces.append(dedup_points(current))

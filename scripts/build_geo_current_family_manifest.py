@@ -13,6 +13,8 @@ from geo_current_dataset_v1_common import (
 
 
 def parse_args() -> argparse.Namespace:
+    # 解析 manifest 构建阶段的命令行参数：
+    # 输入原始 train/val 根目录，输出 family_manifest.jsonl，以及切 patch 的核心超参数。
     parser = argparse.ArgumentParser(description="Build v1-style family manifest from the current GeoTIFF+GeoJSON dataset.")
     parser.add_argument("--dataset-root", type=str, default="/dataset/zsy/dataset-extracted")
     parser.add_argument("--train-root", type=str, default="")
@@ -40,6 +42,8 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    # 一键构建 family manifest：
+    # 先把 train/val 样本目录切成 family+patch 结构，再把结果写成 jsonl 和 summary。
     args = parse_args()
     output_manifest = Path(args.output_manifest).resolve()
     split_roots = {}

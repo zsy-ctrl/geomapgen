@@ -126,6 +126,7 @@ def write_jsonl(path: Path, rows: Iterable[Dict]) -> int:
 
 
 def read_rgb_geotiff(path: Path, band_indices: Sequence[int]) -> Tuple[np.ndarray, RasterMeta]:
+    # 读取原始 GeoTIFF 图像，并同时返回宽高、CRS、仿射变换等 raster 元信息。
     with rasterio_open(path) as ds:
         arr = ds.read(indexes=[int(x) for x in band_indices])
         image = np.transpose(arr, (1, 2, 0)).astype(np.float32)
@@ -140,6 +141,7 @@ def read_rgb_geotiff(path: Path, band_indices: Sequence[int]) -> Tuple[np.ndarra
 
 
 def read_raster_meta(path: Path) -> RasterMeta:
+    # 只读取 raster 的元信息，不加载整张图像像素。
     with rasterio_open(path) as ds:
         return RasterMeta(
             path=str(path),
@@ -151,12 +153,14 @@ def read_raster_meta(path: Path) -> RasterMeta:
 
 
 def read_binary_mask(path: Path, threshold: int) -> np.ndarray:
+    # 读取审核 mask，并把第一个波段按阈值转成二维 0/1 二值图。
     with rasterio_open(path) as ds:
         arr = ds.read(1)
     return (arr > int(threshold)).astype(np.uint8)
 
 
 def detect_geojson_crs(geojson_dict: Dict) -> str:
+    # 从 GeoJSON 里检测源坐标系；如果没写，就退回默认 WGS84。
     crs = geojson_dict.get("crs", {})
     props = crs.get("properties", {}) if isinstance(crs, dict) else {}
     name = props.get("name")
@@ -166,10 +170,12 @@ def detect_geojson_crs(geojson_dict: Dict) -> str:
 
 
 def build_transformer(src_crs: str, dst_crs: str) -> Transformer:
+    # 构建源 CRS -> 目标 CRS 的坐标转换器，后面读 Lane/Intersection 时会复用它。
     return Transformer.from_crs(CRS.from_user_input(src_crs), CRS.from_user_input(dst_crs), always_xy=True)
 
 
 def project_coords(coordinates, transformer: Transformer) -> np.ndarray:
+    # 把 GeoJSON 的原始坐标点逐个投影到 raster 所在的坐标系里。
     points = []
     for value in coordinates:
         if not isinstance(value, (list, tuple)) or len(value) < 2:
@@ -181,6 +187,7 @@ def project_coords(coordinates, transformer: Transformer) -> np.ndarray:
 
 
 def world_to_pixel(points_world: np.ndarray, affine: Affine) -> np.ndarray:
+    # 用 GeoTIFF 的逆仿射变换，把世界坐标点转换成整图像素坐标点。
     #点数量为0则返回空数组
     if points_world.size == 0:
         return np.zeros((0, 2), dtype=np.float32)
@@ -196,6 +203,7 @@ def world_to_pixel(points_world: np.ndarray, affine: Affine) -> np.ndarray:
 
 
 def compute_mask_bbox(mask: np.ndarray) -> Optional[Tuple[int, int, int, int]]:
+    # 计算审核 mask 的最小外接矩形，用于收缩 patch 搜索范围。
     ys, xs = np.where(mask > 0)
     if ys.size == 0 or xs.size == 0:
         return None
@@ -208,6 +216,7 @@ def expand_bbox(
     width: int,
     height: int,
 ) -> Tuple[int, int, int, int]:
+    # 把 review bbox 向四周扩一圈缓冲区，并裁回到图像边界以内。
     if bbox is None:
         return 0, 0, int(width), int(height)
     x0, y0, x1, y1 = bbox
@@ -228,6 +237,7 @@ def build_axis_centers_for_region(
     base_stride_px: int,
     axis_count: int,
 ) -> List[int]:
+    # 根据区域范围、基础步长和最少采样数，计算一维滑窗中心点序列。
     crop_size_px = max(1, int(crop_size_px))
     half = crop_size_px // 2
     min_center = int(region_start) + half
@@ -274,6 +284,7 @@ def build_family_patches_from_centers(
     crop_size_px: int,
     family_grid_size: int,
 ) -> List[Dict]:
+    # 用 x/y 方向中心点网格直接生成 patch family，主要负责补 row/col/crop_box。
     crop_size_px = max(1, int(crop_size_px))
     half = crop_size_px // 2
     x_centers = [int(x) for x in x_centers]
@@ -321,6 +332,7 @@ def build_family_patches_from_centers(
 
 
 def assign_family_ownership_keep_boxes(patches: Sequence[Dict], grid_size: int) -> List[Dict]:
+    # 根据 patch 的左右上下邻居，把 keep_box 调整成 ownership 版本。
     patch_map = {(int(patch["row"]), int(patch["col"])): patch for patch in patches}
     out: List[Dict] = []
     for patch in patches:
@@ -512,23 +524,30 @@ def sanitize_pred_lines_uv(pred_lines: Sequence[Dict]) -> List[Dict]:
         )
     return sort_lines(out)
 
-
+#把一条 polyline 按固定步长 step_px 重采样，但最后那一小段“余数”不丢掉，而是保留到终点。
 def resample_polyline_preserve_remainder(
     points_xy: np.ndarray,
     step_px: float,
     max_points: Optional[int] = None,
 ) -> np.ndarray:
+    #如果本来就不是有效线，直接返回
     pts = dedup_points(np.asarray(points_xy, dtype=np.float32))
     if pts.ndim != 2 or pts.shape[0] < 2:
         return pts.astype(np.float32)
+    #步长无效时直接返回
     step = float(step_px)
     if step <= 0.0:
         return pts.astype(np.float32)
+    #计算每个小线段长度
     seg = np.linalg.norm(pts[1:] - pts[:-1], axis=1)
+    #计算整条线总长度
     total = float(np.sum(seg))
+    #如果总长度几乎为 0，退化处理
     if total < 1e-6:
         return pts[:1].astype(np.float32)
+    #构造累计长度数组
     cum = np.concatenate(([0.0], np.cumsum(seg)))
+    #生成目标采样距离 targets
     targets: List[float] = [0.0]
     dist = float(step)
     while dist < total:
@@ -536,13 +555,17 @@ def resample_polyline_preserve_remainder(
         dist += float(step)
     if targets[-1] != float(total):
         targets.append(float(total))
+    #如果设置了 max_points，就截断采样点数量
     if max_points is not None and int(max_points) > 0 and len(targets) > int(max_points):
         targets = targets[: max(1, int(max_points) - 1)] + [float(total)]
+    #真正开始采样
     sampled: List[np.ndarray] = []
     for target in targets:
+        #如果这个目标就是终点，直接取最后一个点
         if target >= total:
             sampled.append(pts[-1].astype(np.float32))
             continue
+        #找这个目标距离落在哪个原始小线段里
         seg_idx = int(np.searchsorted(cum, target, side="right") - 1)
         seg_idx = min(max(seg_idx, 0), len(seg) - 1)
         t0 = float(cum[seg_idx])
@@ -948,6 +971,7 @@ def generate_tile_windows(
     keep_margin_px: int,
 ) -> List[TileWindow]:
     #滑动步长为patch尺寸减overlap，这里overlap我设为0
+    # 根据图像大小、搜索区域和 overlap，生成所有候选 patch 窗口及其初始 keep_box。
     stride = max(1, int(tile_size_px) - int(overlap_px))
     rx0, ry0, rx1, ry1 = (0, 0, int(width), int(height)) if region_bbox is None else tuple(int(v) for v in region_bbox)
     #用numpy数据记录每一个窗口的xy值，交给后续处理
@@ -982,6 +1006,7 @@ def generate_tile_windows(
 
 
 def annotate_tile_windows_with_mask(tile_windows: Sequence[TileWindow], mask: Optional[np.ndarray]) -> List[TileWindow]:
+    # 给每个候选 patch 统计审核 mask 覆盖比例和像素数，供后续筛窗和审计使用。
     if mask is None:
         return list(tile_windows)
     out: List[TileWindow] = []
@@ -1165,12 +1190,20 @@ def mask_clip_line(points_xy: np.ndarray, review_mask: Optional[np.ndarray], min
     return out
 
 
+# #比较 clipped_points[0] 和 source_points[0]
+# 比较 clipped_points[-1] 和 source_points[-1]
+# 如果不一样，就认为：
+
+# 起点/终点不是原始线天然端点
+# 而是被裁出来的
+# 所以对应应该是 cut
 def _line_piece_cut_flags_after_clip(
     source_points: np.ndarray,
     clipped_points: np.ndarray,
     cut_start: bool,
     cut_end: bool,
 ) -> Tuple[bool, bool]:
+    # 比较原始线和裁后 piece 的首尾点，判断当前 piece 两端是否是“被裁出来的 cut 端”。
     src = np.asarray(source_points, dtype=np.float32)
     dst = np.asarray(clipped_points, dtype=np.float32)
     if src.ndim != 2 or dst.ndim != 2 or src.shape[0] == 0 or dst.shape[0] == 0:
@@ -1182,6 +1215,7 @@ def _line_piece_cut_flags_after_clip(
 
 
 def geojson_lines_to_pixel_lines(geojson_dict: Dict, raster_meta: RasterMeta, category: str) -> List[Dict]:
+    # 把 Lane.geojson 中的 LineString 读出来，并统一转换成整图像素坐标线段。
     #获得geojson中的CRS 是什么，得到坐标系是什么才能做坐标系转换
     src_crs = detect_geojson_crs(geojson_dict)
     #构建GeoJSON 坐标系 -> tif 坐标系的转换器
@@ -1209,6 +1243,7 @@ def geojson_lines_to_pixel_lines(geojson_dict: Dict, raster_meta: RasterMeta, ca
 
 
 def ensure_closed_ring(points_xy: np.ndarray, eps: float = 1e-3) -> np.ndarray:
+    # 保证 polygon ring 首尾闭合；如果没闭合，就把第一个点补到最后。
     #先把输入统一成 float32 数组
     pts = np.asarray(points_xy, dtype=np.float32)
     #如果输入根本不是合法点列，返回空数组
@@ -1257,6 +1292,7 @@ def simplify_polyline_straight(points_xy: np.ndarray, tolerance_px: float = 1.5)
 
 
 def geojson_polygons_to_pixel_rings(geojson_dict: Dict, raster_meta: RasterMeta, category: str) -> List[Dict]:
+    # 把 Intersection.geojson 中的 Polygon 读出来，并统一转换成整图像素坐标 ring。
     src_crs = detect_geojson_crs(geojson_dict)
     transformer = build_transformer(src_crs=src_crs, dst_crs=raster_meta.crs)
     out: List[Dict] = []
@@ -1287,6 +1323,7 @@ def load_sample_global_lines(
     include_lane: bool = True,
     include_intersection: bool = True,
 ) -> List[Dict]:
+    # 读取一个 sample 目录下的 Lane/Intersection 标注，并统一转换成整图像素坐标几何。
     out: List[Dict] = []
     if include_lane:
         #拼出 lane 文件的真实路径
@@ -1310,6 +1347,7 @@ def load_sample_global_lines(
 
 #使用的Sutherland-Hodgman算法，一种经典的多边形逐边裁剪算法
 #points_xy，原始 polygon 的点列
+#把 polygon 依次拿去和矩形的左、右、上、下四条边裁剪；如果一条边穿过边界就补交点；最后把裁完剩下的顶点整理成一个闭合 ring 返回
 def clip_polygon_ring_to_rect(points_xy: np.ndarray, rect: Tuple[float, float, float, float]) -> List[np.ndarray]:
     #先把输入标准化成合法闭环 polygon
     pts = ensure_closed_ring(np.asarray(points_xy, dtype=np.float32))
@@ -1317,12 +1355,13 @@ def clip_polygon_ring_to_rect(points_xy: np.ndarray, rect: Tuple[float, float, f
         return []
     poly = pts[:-1].astype(np.float32)
     x_min, y_min, x_max, y_max = [float(v) for v in rect]
-
+    #判断点是否在keepbox中
     def inside_left(p): return float(p[0]) >= x_min
     def inside_right(p): return float(p[0]) <= x_max
     def inside_top(p): return float(p[1]) >= y_min
     def inside_bottom(p): return float(p[1]) <= y_max
-
+    #定义和边界的交点怎么算
+    #和竖直边相交
     def intersect_vertical(s, e, x_edge):
         s = np.asarray(s, dtype=np.float32)
         e = np.asarray(e, dtype=np.float32)
@@ -1331,7 +1370,7 @@ def clip_polygon_ring_to_rect(points_xy: np.ndarray, rect: Tuple[float, float, f
             return np.asarray([float(x_edge), float(s[1])], dtype=np.float32)
         t = (float(x_edge) - float(s[0])) / dx
         return np.asarray([float(x_edge), float(s[1] + t * (e[1] - s[1]))], dtype=np.float32)
-
+    #和水平边相交
     def intersect_horizontal(s, e, y_edge):
         s = np.asarray(s, dtype=np.float32)
         e = np.asarray(e, dtype=np.float32)
@@ -1340,13 +1379,14 @@ def clip_polygon_ring_to_rect(points_xy: np.ndarray, rect: Tuple[float, float, f
             return np.asarray([float(s[0]), float(y_edge)], dtype=np.float32)
         t = (float(y_edge) - float(s[1])) / dy
         return np.asarray([float(s[0] + t * (e[0] - s[0])), float(y_edge)], dtype=np.float32)
-
+    #核心裁剪函数 clip_against，把一个 polygon 顶点序列，针对某一条边裁一遍
     def clip_against(subject: List[np.ndarray], inside_fn, intersect_fn) -> List[np.ndarray]:
         if not subject:
             return []
         output: List[np.ndarray] = []
         prev = subject[-1]
         prev_inside = bool(inside_fn(prev))
+        #遍历每个当前点
         for curr in subject:
             curr_inside = bool(inside_fn(curr))
             if curr_inside:
@@ -1358,7 +1398,7 @@ def clip_polygon_ring_to_rect(points_xy: np.ndarray, rect: Tuple[float, float, f
             prev = curr
             prev_inside = curr_inside
         return output
-
+    #依次对矩形四条边裁剪
     subject = [np.asarray(p, dtype=np.float32) for p in poly]
     subject = clip_against(subject, inside_left, lambda s, e: intersect_vertical(s, e, x_min))
     subject = clip_against(subject, inside_right, lambda s, e: intersect_vertical(s, e, x_max))
@@ -1380,6 +1420,8 @@ def build_patch_segments_global(
     resample_step_px: float,
     boundary_tol_px: float,
 ) -> List[Dict]:
+    # 把整图 GT 按当前 patch 的全局矩形裁开：
+    # polygon 和 line 分别处理，并为 line 重新计算 cut/start/end、重采样和排序。
     out: List[Dict] = []
     clipped_polygon_rings: List[np.ndarray] = []
     line_features: List[Dict] = []
@@ -1479,6 +1521,7 @@ def build_patch_segments_global(
 
 
 def build_patch_target_lines_quantized(patch_segments_global: Sequence[Dict], patch: Dict) -> List[Dict]:
+    # 把 patch 的全局几何片段转成 patch-local 的整数点列，作为最终训练 target_lines。
     crop_box = patch["crop_box"]
     offset = np.asarray([crop_box["x_min"], crop_box["y_min"]], dtype=np.float32)[None, :]
     patch_size = int(crop_box["x_max"] - crop_box["x_min"])
@@ -1510,6 +1553,7 @@ def build_patch_target_lines_quantized(patch_segments_global: Sequence[Dict], pa
 
 
 def build_patch_target_lines_float(patch_segments_global: Sequence[Dict], patch: Dict) -> List[Dict]:
+    # 把 patch 的全局几何片段转成 patch-local 的浮点点列，便于调试和高精度可视化。
     crop_box = patch["crop_box"]
     offset = np.asarray([crop_box["x_min"], crop_box["y_min"]], dtype=np.float32)[None, :]
     patch_width, patch_height = patch_local_size(patch)
@@ -1563,6 +1607,8 @@ def build_manifest_for_dataset(
     num_shards: int = 1,
     split_roots: Optional[Dict[str, Path]] = None,
 ) -> List[Dict]:
+    # 当前数据主链的 manifest 构建入口：
+    # 扫描 train/val 样本目录，读取原图和 mask，生成 family 及其 patch 网格索引。
     families: List[Dict] = []
     shard_index = max(0, int(shard_index))
     num_shards = max(1, int(num_shards))
@@ -1761,6 +1807,7 @@ def build_manifest_for_dataset(
 
 
 def load_family_raster_and_mask(family: Dict, band_indices: Sequence[int], mask_threshold: int) -> Tuple[np.ndarray, RasterMeta, Optional[np.ndarray]]:
+    # 读取一个 family 对应的原始大图和审核 mask，并把 mask 外区域在图像里置黑。
     #读取原始图像
     image_hwc, raster_meta = read_rgb_geotiff(Path(family["source_image_path"]).resolve(), band_indices=band_indices)
     mask_path = str(family.get("source_mask_path", "")).strip()
@@ -1780,6 +1827,7 @@ def family_global_lines(
     include_intersection: bool = True,
 ) -> List[Dict]:
     #根据一个 family，把这张原始大图对应的 Lane.geojson 和 Intersection.geojson 读出来
+    # 根据 family 记录里的路径，读取当前 sample 的 Lane/Intersection 并转成全局像素几何。
     image_path = Path(family["source_image_path"]).resolve()
     sample_dir = image_path.parents[1]
     lane_path = Path(str(family.get("source_lane_path", "")).strip()) if str(family.get("source_lane_path", "")).strip() else sample_dir / DEFAULT_LANE_RELPATH
@@ -1798,6 +1846,7 @@ def family_global_lines(
 
 
 def build_patch_image(raw_image_hwc: np.ndarray, patch: Dict) -> Image.Image:
+    # 按 patch 的 crop_box 从整张原图中裁出训练时使用的 patch 图像。
     crop_box = patch["crop_box"]
     crop = raw_image_hwc[
         int(crop_box["y_min"]) : int(crop_box["y_max"]),
@@ -1814,8 +1863,10 @@ def build_owned_segments_by_patch(
     boundary_tol_px: float,
 ) -> Dict[int, List[Dict]]:
     #初始化输出字典
+    # 把整图全局 GT 按每个 patch 的 keep_box 切开，得到“这个 patch 真正拥有的几何片段”。
     out: Dict[int, List[Dict]] = {}
     #按 patch_id 排序遍历 patch
+    out: Dict[int, List[Dict]] = {}
     for patch in sorted(list(family["patches"]), key=lambda item: int(item["patch_id"])):
         #取出当前 patch 的 keep_box
         keep_box = patch["keep_box"]
@@ -1844,6 +1895,8 @@ def build_full_segments_for_patch(
     resample_step_px: float,
     boundary_tol_px: float,
 ) -> List[Dict]:
+    # 按 patch 的 crop_box 裁出“图像里能看到的全部几何”，主要用于可视化和分析。
+    crop_box = patch["crop_box"]
     crop_box = patch["crop_box"]
     rect_global = (
         float(crop_box["x_min"]),
@@ -1867,6 +1920,7 @@ def extract_state_lines(
     trace_points: int,
     boundary_tol_px: float,
 ) -> List[Dict]:
+    # 从左邻/上邻 patch 的 owned segments 中提取 state 线段，供 stage_b 训练使用。
     patches = sorted(list(family["patches"]), key=lambda item: int(item["patch_id"]))
     patch_map = {(int(item["row"]), int(item["col"])): item for item in patches}
     row = int(patch["row"])
@@ -1941,6 +1995,7 @@ def build_patch_only_record(
     system_prompt: str,
     prompt_template: str,
 ) -> Dict:
+    # 生成 stage_a 的一条 ShareGPT 记录：图片 + prompt + target_lines。
     target_json = json.dumps({"lines": list(target_lines)}, ensure_ascii=False, separators=(",", ":"))
     messages: List[Dict] = []
     if str(system_prompt).strip():
@@ -1958,6 +2013,7 @@ def build_state_record(
     system_prompt: str,
     prompt_template: str,
 ) -> Dict:
+    # 生成 stage_b 的一条 ShareGPT 记录：图片 + state_lines + target_lines。
     state_json = json.dumps({"lines": list(state_lines)}, ensure_ascii=False, separators=(",", ":"))
     target_json = json.dumps({"lines": list(target_lines)}, ensure_ascii=False, separators=(",", ":"))
     messages: List[Dict] = []

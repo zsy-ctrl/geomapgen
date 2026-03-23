@@ -26,6 +26,8 @@ Previous state:
 
 
 def parse_args() -> argparse.Namespace:
+    # 解析 fixed16 再加工参数：
+    # 输入是 stage_a/stage_b 母集，输出是按固定网格切成 box 目标的新数据集。
     parser = argparse.ArgumentParser(
         description="Build a fixed-grid target-box dataset from an existing full-patch Stage A or Stage B dataset."
     )
@@ -261,6 +263,7 @@ def extract_message_content(row: Dict, role: str) -> str:
 
 
 def build_grid_boxes(patch_size: int, grid_size: int) -> List[Dict[str, int]]:
+    # 把一张完整 patch 均匀切成 grid_size x grid_size 个固定 target box。
     edges = [int(round(i * patch_size / grid_size)) for i in range(grid_size + 1)]
     boxes: List[Dict[str, int]] = []
     for grid_row in range(grid_size):
@@ -283,6 +286,7 @@ def build_grid_boxes(patch_size: int, grid_size: int) -> List[Dict[str, int]]:
 
 
 def longest_piece_in_box(lines: Sequence[Dict], rect: Tuple[float, float, float, float]) -> Optional[np.ndarray]:
+    # 在当前 target box 里找最长的一段线，用它来构造 prompt 的起点和终点。
     best_piece: Optional[np.ndarray] = None
     best_len = -1.0
     for line in lines:
@@ -297,6 +301,8 @@ def longest_piece_in_box(lines: Sequence[Dict], rect: Tuple[float, float, float,
 
 
 def build_prompt_endpoints(target_lines: Sequence[Dict], target_box: Dict[str, int], patch_size: int) -> Dict[str, object]:
+    # 为 fixed16 样本生成 prompt 锚点：
+    # 优先使用 box 内最长线段的两端；如果 box 里没有线，就退化到 box 中心附近的默认锚点。
     rect = (
         float(target_box["x_min"]),
         float(target_box["y_min"]),
@@ -345,6 +351,8 @@ def build_target_lines_for_box(
     boundary_tol_px: float,
     resample_step_px: float,
 ) -> List[Dict]:
+    # 从整张 patch 的 target_lines 中裁出当前 box 里的那部分线，
+    # 并重新计算 cut/start/end、重采样和排序，得到 box 级真值。
     local_rect = (
         float(target_box["x_min"]),
         float(target_box["y_min"]),
@@ -381,6 +389,7 @@ def build_target_lines_for_box(
 
 
 def format_prompt_text(prompt_fields: Dict[str, int], state_json: Optional[str] = None) -> str:
+    # 根据是否有 state，拼出 fixed16 的最终 user prompt 文本。
     if state_json is None:
         return DEFAULT_PROMPT_TEMPLATE.format(**prompt_fields)
     fields = dict(prompt_fields)
@@ -389,6 +398,7 @@ def format_prompt_text(prompt_fields: Dict[str, int], state_json: Optional[str] 
 
 
 def make_record(sample_id: str, image_rel_path: str, prompt_text: str, target_lines: Sequence[Dict], system_prompt: str) -> Dict:
+    # 生成 patch-only fixed16 的一条 ShareGPT 训练记录。
     target_json = json.dumps({"lines": list(target_lines)}, ensure_ascii=False, separators=(",", ":"))
     messages: List[Dict] = []
     if str(system_prompt).strip():
@@ -410,6 +420,7 @@ def make_state_record(
     state_lines: Sequence[Dict],
     system_prompt: str,
 ) -> Dict:
+    # 生成 state-aware fixed16 的一条 ShareGPT 训练记录。
     state_json = json.dumps({"lines": list(state_lines)}, ensure_ascii=False, separators=(",", ":"))
     target_json = json.dumps({"lines": list(target_lines)}, ensure_ascii=False, separators=(",", ":"))
     messages: List[Dict] = []
@@ -432,6 +443,8 @@ def sanitize_name(name: str) -> str:
 
 
 def link_or_copy_images(input_root: Path, output_root: Path, mode: str) -> str:
+    # fixed16 不重新切小图，而是复用母集 patch 图像。
+    # 这里负责把母集 images 目录以 symlink / copy / none 的方式暴露到新数据集下。
     src = input_root / "images"
     dst = output_root / "images"
     if not src.exists() or str(mode) == "none":
@@ -454,6 +467,7 @@ def filter_pairs_to_empty_ratio(
     target_empty_ratio: float,
     rng: random.Random,
 ) -> Tuple[List[Tuple[Dict, Dict]], Dict[str, float]]:
+    # 对 fixed16 的空 box 做下采样：非空 box 全保留，空 box 按目标空样本比例保留。
     non_empty_pairs = [pair for pair in pairs if int(pair[1].get("num_target_lines", 0)) > 0]
     empty_pairs = [pair for pair in pairs if int(pair[1].get("num_target_lines", 0)) <= 0]
 
@@ -512,6 +526,7 @@ def save_visualization(
     anchor_piece_points: Sequence[Sequence[int]],
     out_path: Path,
 ) -> None:
+    # 输出 box 级调试图：画出整张 patch、当前 target box、锚点线段和 box 内目标线。
     ensure_dir(out_path.parent)
     image = patch_image.convert("RGB")
     draw = ImageDraw.Draw(image)
@@ -557,6 +572,8 @@ def build_split(
     export_visualizations: bool,
     max_visualizations_per_split: int,
 ) -> Dict[str, object]:
+    # 构建单个 split 的 fixed16 数据：
+    # 读取母集 rows/meta，逐 patch 展开成多个 box 样本，再做空 box 过滤和可视化导出。
     split_jsonl = input_root / f"{split}.jsonl"
     split_meta_jsonl = input_root / f"meta_{split}.jsonl"
     if not split_jsonl.exists() or not split_meta_jsonl.exists():
@@ -734,6 +751,7 @@ def build_split(
 
 
 def build_dataset_info(output_root: Path, splits: Sequence[str]) -> Dict[str, Dict]:
+    # 生成 fixed16 数据集自己的 dataset_info.json。
     base = sanitize_name(output_root.name)
     info: Dict[str, Dict] = {}
     for split in splits:
@@ -771,6 +789,8 @@ def build_fixed_grid_targetbox_dataset(
     export_visualizations: bool,
     max_visualizations_per_split: int,
 ) -> Dict[str, object]:
+    # fixed16 总控函数：
+    # 复用上游 stage_a/stage_b 母集图像和 meta，构建 train/val 的 fixed-grid target-box 数据集。
     if int(grid_size) <= 0:
         raise ValueError("--grid-size must be positive.")
     if not (0.0 <= float(target_empty_ratio) <= 1.0):
@@ -827,6 +847,7 @@ def build_fixed_grid_targetbox_dataset(
 
 
 def main() -> None:
+    # 脚本入口：把现有 full-patch 母集转换成 fixed16 数据集。
     args = parse_args()
     summary = build_fixed_grid_targetbox_dataset(
         input_root=args.input_root,

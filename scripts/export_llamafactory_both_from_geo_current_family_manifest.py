@@ -29,6 +29,8 @@ from geo_current_dataset_v1_common import (
 
 
 def parse_args() -> argparse.Namespace:
+    # 解析从 family_manifest 导出 stage_a / stage_b 的参数。
+    # 这里同时控制 GT 重采样、state 混合方式和空 patch 下采样比例。
     parser = argparse.ArgumentParser(description="Export Stage A and Stage B datasets together from current-dataset family manifests.")
     parser.add_argument("--family-manifest", type=str, required=True)
     parser.add_argument("--output-root", type=str, required=True)
@@ -60,6 +62,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def build_dataset_registry(output_root: Path, prefix: str) -> Dict[str, Dict]:
+    # 生成 LLaMAFactory 用的 dataset_info 注册表，只登记当前目录里存在的 split。
     registry: Dict[str, Dict] = {}
     for split in ("train", "val"):
         dataset_file = output_root / f"{split}.jsonl"
@@ -86,6 +89,7 @@ def downsample_empty_patch_records(
     seed: int,
     split: str,
 ) -> Tuple[List[Dict], Dict[str, float]]:
+    # 空 patch 过滤器：非空全部保留，空样本按比例随机保留，并返回过滤统计。
     safe_ratio = max(0.0, min(1.0, float(drop_ratio)))
     generated_total = len(records)
     empty_records = [record for record in records if int(record["stagea_meta"].get("num_target_lines", 0)) <= 0]
@@ -139,6 +143,9 @@ def export_families_to_stage_datasets(
     stageb_system_prompt: str,
     stageb_prompt_template: str,
 ) -> Dict[str, object]:
+    # 主导出函数：
+    # 从 family 读取原图与全局 GT，逐 patch 生成 stage_a 的 target 和 stage_b 的 state+target，
+    # 最终一起落盘为两套 ShareGPT 数据集。
     #创建输出目录
     output_root = Path(output_root).resolve()
     stage_a_root = output_root / "stage_a" / "dataset"
@@ -185,8 +192,12 @@ def export_families_to_stage_datasets(
             resample_step_px=float(resample_step_px),
             boundary_tol_px=float(boundary_tol_px),
         )
-
+        #遍历一张原始大图对应的所有 patch
         for patch in sorted(list(family["patches"]), key=lambda item: int(item["patch_id"])):
+            # 生成 patch 图片
+            # 生成 stage_a 的训练样本
+            # 生成 stage_b 的训练样本
+            # 再把这两个版本的 meta 一起存起来
             patch_id = int(patch["patch_id"])
             patch_image = build_patch_image(raw_image_hwc=raw_image_hwc, patch=patch)
             target_lines_float = build_patch_target_lines_float(owned_segments_by_patch.get(patch_id, []), patch=patch)
@@ -211,6 +222,7 @@ def export_families_to_stage_datasets(
                 prompt_template=str(stagea_prompt_template),
             )
             stagea_meta = {
+                # stage_a meta 记录 patch 的来源、空间框和三种 target 表达，便于调试和后续再加工。
                 "id": sample_id,
                 "split": split,
                 "family_id": family["family_id"],
@@ -271,6 +283,7 @@ def export_families_to_stage_datasets(
                 prompt_template=str(stageb_prompt_template),
             )
             stageb_meta = {
+                # stage_b meta 在 stage_a 基础上增加 state 信息，用于 state-aware 训练和 fixed16 再切分。
                 "id": sample_id,
                 "split": split,
                 "family_id": family["family_id"],
@@ -310,6 +323,7 @@ def export_families_to_stage_datasets(
 
     for split in splits:
         split = str(split)
+        # 每个 split 先做空 patch 过滤，再分别写出 stage_a / stage_b 的 jsonl 和 meta。
         split_drop_ratio = float(empty_patch_drop_ratio)
         if empty_patch_drop_ratio_by_split is not None and split in empty_patch_drop_ratio_by_split:
             split_drop_ratio = float(empty_patch_drop_ratio_by_split[split])
@@ -375,6 +389,7 @@ def export_families_to_stage_datasets(
 
 
 def main() -> None:
+    # 入口函数：读取 family_manifest.jsonl，然后一次导出 stage_a 和 stage_b。
     args = parse_args()
     output_root = Path(args.output_root).resolve()
     ensure_dir(output_root)
