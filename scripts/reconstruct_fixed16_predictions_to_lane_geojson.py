@@ -82,10 +82,19 @@ def _extract_first_image_path(row: Dict) -> str:
     images = row.get("images")
     if isinstance(images, list):
         for value in images:
-            text = _normalize_image_key(value)
-            if text:
-                return text
+            if isinstance(value, dict):
+                text = _normalize_image_key(value.get("path", "") or value.get("image", "") or value.get("url", ""))
+                if text:
+                    return text
+            else:
+                text = _normalize_image_key(value)
+                if text:
+                    return text
     image = row.get("image")
+    if isinstance(image, dict):
+        text = _normalize_image_key(image.get("path", "") or image.get("image", "") or image.get("url", ""))
+        if text:
+            return text
     if isinstance(image, str):
         return _normalize_image_key(image)
     return ""

@@ -1311,6 +1311,7 @@ def load_sample_global_lines(
 #使用的Sutherland-Hodgman算法，一种经典的多边形逐边裁剪算法
 #points_xy，原始 polygon 的点列
 def clip_polygon_ring_to_rect(points_xy: np.ndarray, rect: Tuple[float, float, float, float]) -> List[np.ndarray]:
+    #先把输入标准化成合法闭环 polygon
     pts = ensure_closed_ring(np.asarray(points_xy, dtype=np.float32))
     if pts.ndim != 2 or pts.shape[0] < 4:
         return []
