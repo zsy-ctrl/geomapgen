@@ -1209,13 +1209,18 @@ def geojson_lines_to_pixel_lines(geojson_dict: Dict, raster_meta: RasterMeta, ca
 
 
 def ensure_closed_ring(points_xy: np.ndarray, eps: float = 1e-3) -> np.ndarray:
+    #先把输入统一成 float32 数组
     pts = np.asarray(points_xy, dtype=np.float32)
+    #如果输入根本不是合法点列，返回空数组
     if pts.ndim != 2 or pts.shape[0] == 0:
         return np.zeros((0, 2), dtype=np.float32)
+    # 如果只有一个点，就把自己复制一遍
     if pts.shape[0] == 1:
         return np.concatenate([pts, pts], axis=0).astype(np.float32)
+    #如果首尾是同一个点，就认为它已经闭合
     if float(np.linalg.norm(pts[0] - pts[-1])) <= float(eps):
         return pts.astype(np.float32)
+    #如果首尾没闭合，就把第一个点补到最后
     return np.concatenate([pts, pts[:1]], axis=0).astype(np.float32)
 
 
@@ -1303,7 +1308,8 @@ def load_sample_global_lines(
             )
     return out
 
-
+#使用的Sutherland-Hodgman算法，一种经典的多边形逐边裁剪算法
+#points_xy，原始 polygon 的点列
 def clip_polygon_ring_to_rect(points_xy: np.ndarray, rect: Tuple[float, float, float, float]) -> List[np.ndarray]:
     pts = ensure_closed_ring(np.asarray(points_xy, dtype=np.float32))
     if pts.ndim != 2 or pts.shape[0] < 4:
