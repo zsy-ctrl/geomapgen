@@ -69,6 +69,63 @@ def load_prediction_rows(path: Path) -> List[Dict]:
     return []
 
 
+def _normalize_match_text(value: str) -> str:
+    return " ".join(str(value or "").replace("\r", "\n").split())
+
+
+def _normalize_image_key(value: str) -> str:
+    text = str(value or "").strip().replace("\\", "/")
+    return text
+
+
+def _extract_first_image_path(row: Dict) -> str:
+    images = row.get("images")
+    if isinstance(images, list):
+        for value in images:
+            text = _normalize_image_key(value)
+            if text:
+                return text
+    image = row.get("image")
+    if isinstance(image, str):
+        return _normalize_image_key(image)
+    return ""
+
+
+def _extract_user_prompt_text(row: Dict) -> str:
+    messages = row.get("messages")
+    if isinstance(messages, list):
+        for msg in messages:
+            if not isinstance(msg, dict):
+                continue
+            role = str(msg.get("role", msg.get("from", ""))).strip().lower()
+            if role not in {"user", "human"}:
+                continue
+            content = msg.get("content", msg.get("value", ""))
+            if isinstance(content, str) and content.strip():
+                return _normalize_match_text(content)
+    for key in ("prompt", "query", "instruction", "input", "question"):
+        value = row.get(key)
+        if isinstance(value, str) and value.strip():
+            return _normalize_match_text(value)
+    return ""
+
+
+def build_meta_signature(meta: Dict) -> str:
+    image_key = _normalize_image_key(str(meta.get("image", "")))
+    prompt_key = _normalize_match_text(str(meta.get("prompt_text", "")))
+    if image_key and prompt_key:
+        return f"{image_key}|||{prompt_key}"
+    return ""
+
+
+def build_prediction_signature(row: Dict) -> str:
+    image_key = _extract_first_image_path(row)
+    prompt_key = _extract_user_prompt_text(row)
+    if image_key and prompt_key:
+        return f"{image_key}|||{prompt_key}"
+    return ""
+
+
 def _parse_prediction_text(text: str) -> List[Dict]:
     pred_obj, _ = parse_generated_json(str(text or ""))
     if isinstance(pred_obj, dict):
@@ -124,8 +181,12 @@ def extract_prediction_lines(row: Dict) -> List[Dict]:
     return []
 
 
-def build_prediction_index(prediction_rows: Sequence[Dict], meta_rows: Sequence[Dict]) -> Tuple[Dict[str, List[Dict]], Dict[str, int], int]:
+def build_prediction_index(
+    prediction_rows: Sequence[Dict],
+    meta_rows: Sequence[Dict],
+) -> Tuple[Dict[str, List[Dict]], Dict[str, List[Dict]], Dict[str, int], int]:
     by_id: Dict[str, List[Dict]] = {}
+    by_signature: Dict[str, List[Dict]] = {}
     parse_count = 0
     for row in prediction_rows:
         pred_lines = extract_prediction_lines(row)
@@ -140,12 +201,15 @@ def build_prediction_index(prediction_rows: Sequence[Dict], meta_rows: Sequence[
         ).strip()
         if sample_id:
             by_id[sample_id] = pred_lines
+        signature = build_prediction_signature(row)
+        if signature:
+            by_signature[signature] = pred_lines
 
     fallback_index: Dict[str, int] = {}
     if len(by_id) < len(meta_rows) and len(prediction_rows) == len(meta_rows):
         for idx, meta in enumerate(meta_rows):
             fallback_index[str(meta.get("id"))] = idx
-    return by_id, fallback_index, parse_count
+    return by_id, by_signature, fallback_index, parse_count
 
 
 def resolve_family_manifest_path(fixed16_root: Path, family_manifest_arg: str) -> Optional[Path]:
@@ -187,6 +251,7 @@ def collect_prediction_targets(
     meta_rows: Sequence[Dict],
     prediction_rows: Sequence[Dict],
     pred_by_id: Dict[str, List[Dict]],
+    pred_by_signature: Dict[str, List[Dict]],
     fallback_index: Dict[str, int],
 ) -> Tuple[List[Tuple[Dict, List[Dict]]], int, int, List[str], str]:
     meta_by_id = {str(meta.get("id")): meta for meta in meta_rows}
@@ -202,6 +267,17 @@ def collect_prediction_targets(
             if pred_id not in meta_by_id:
                 unmatched_prediction_ids.append(pred_id)
         return matched, len(matched), 0, unmatched_prediction_ids, "by_id"
+
+    if pred_by_signature:
+        matched_signatures: List[str] = []
+        for meta in meta_rows:
+            signature = build_meta_signature(meta)
+            if not signature or signature not in pred_by_signature:
+                continue
+            matched.append((meta, pred_by_signature[signature]))
+            matched_signatures.append(signature)
+        unmatched_prediction_signatures = sorted(sig for sig in pred_by_signature.keys() if sig not in set(matched_signatures))
+        return matched, len(matched), 0, unmatched_prediction_signatures, "by_image_and_prompt"
 
     if fallback_index:
         missing_predictions = 0
@@ -408,11 +484,12 @@ def main() -> None:
     manifest_map = {str(row["family_id"]): row for row in manifest_rows if isinstance(row, dict) and str(row.get("family_id", "")).strip()}
     meta_rows = load_jsonl(meta_path)
     prediction_rows = load_prediction_rows(predictions_path)
-    pred_by_id, fallback_index, parse_count = build_prediction_index(prediction_rows, meta_rows)
+    pred_by_id, pred_by_signature, fallback_index, parse_count = build_prediction_index(prediction_rows, meta_rows)
     matched_items, matched_predictions, missing_predictions, unmatched_prediction_ids, match_mode = collect_prediction_targets(
         meta_rows=meta_rows,
         prediction_rows=prediction_rows,
         pred_by_id=pred_by_id,
+        pred_by_signature=pred_by_signature,
         fallback_index=fallback_index,
     )
 
