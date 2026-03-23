@@ -44,7 +44,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fixed16-root", type=str, required=True, help="fixed16_stage_a or fixed16_stage_b root.")
     parser.add_argument("--predictions-path", type=str, required=True, help="Prediction json/jsonl file aligned with the fixed16 split.")
     parser.add_argument("--output-root", type=str, required=True, help="Where to write stitched GeoJSON outputs.")
-    parser.add_argument("--split", type=str, default="val", choices=["train", "val"])
+    parser.add_argument("--split", type=str, default="val", choices=["train", "val", "auto"])
     parser.add_argument("--family-manifest", type=str, default="", help="Optional family_manifest.jsonl path. Defaults to fixed16_root/../family_manifest.jsonl")
     parser.add_argument("--merge-endpoint-tol-px", type=float, default=2.0, help="Tolerance for merging cut-to-cut box fragments.")
     parser.add_argument("--source-sample-id", type=str, default="", help="Optional source sample filter.")
@@ -67,6 +67,41 @@ def load_prediction_rows(path: Path) -> List[Dict]:
                 return [row for row in value if isinstance(row, dict)]
         return [obj]
     return []
+
+
+def discover_available_splits(fixed16_root: Path) -> List[str]:
+    out: List[str] = []
+    for path in sorted(fixed16_root.glob("meta_*.jsonl")):
+        name = path.name
+        if not name.startswith("meta_") or not name.endswith(".jsonl"):
+            continue
+        split = name[len("meta_") : -len(".jsonl")].strip()
+        if split and split not in out:
+            out.append(split)
+    return out
+
+
+def load_meta_rows_for_split(fixed16_root: Path, split: str) -> Optional[List[Dict]]:
+    meta_path = fixed16_root / f"meta_{split}.jsonl"
+    if not meta_path.is_file():
+        return None
+    return load_jsonl(meta_path)
+
+
+def ordered_split_candidates(fixed16_root: Path, requested_split: str) -> List[str]:
+    available = discover_available_splits(fixed16_root)
+    if not available:
+        return []
+    if str(requested_split).strip().lower() == "auto":
+        return available
+    ordered: List[str] = []
+    wanted = str(requested_split).strip()
+    if wanted in available:
+        ordered.append(wanted)
+    for split in available:
+        if split not in ordered:
+            ordered.append(split)
+    return ordered
 
 
 def _normalize_match_text(value: str) -> str:
@@ -348,6 +383,67 @@ def collect_prediction_targets(
     return matched, 0, int(len(meta_rows)), [], "no_match"
 
 
+def choose_best_meta_split(
+    fixed16_root: Path,
+    requested_split: str,
+    prediction_rows: Sequence[Dict],
+) -> Tuple[str, List[Dict], Dict[str, List[Dict]], Dict[str, List[Dict]], Dict[str, int], int, List[Tuple[Dict, List[Dict]]], int, int, List[str], str, List[Dict]]:
+    candidates = ordered_split_candidates(fixed16_root=fixed16_root, requested_split=requested_split)
+    if not candidates:
+        raise FileNotFoundError(f"No fixed16 meta_*.jsonl files found under {fixed16_root}")
+
+    best_payload = None
+    best_score: Optional[Tuple[int, int, int]] = None
+    split_probe: List[Dict] = []
+    wanted = str(requested_split).strip()
+
+    for candidate_split in candidates:
+        meta_rows = load_meta_rows_for_split(fixed16_root=fixed16_root, split=candidate_split)
+        if meta_rows is None:
+            continue
+        pred_by_id, pred_by_signature, fallback_index, parse_count = build_prediction_index(prediction_rows, meta_rows)
+        matched_items, matched_predictions, missing_predictions, unmatched_prediction_ids, match_mode = collect_prediction_targets(
+            meta_rows=meta_rows,
+            prediction_rows=prediction_rows,
+            pred_by_id=pred_by_id,
+            pred_by_signature=pred_by_signature,
+            fallback_index=fallback_index,
+        )
+        split_probe.append(
+            {
+                "split": str(candidate_split),
+                "meta_row_count": int(len(meta_rows)),
+                "matched_predictions": int(matched_predictions),
+                "missing_predictions": int(missing_predictions),
+                "prediction_match_mode": str(match_mode),
+            }
+        )
+        score = (
+            int(matched_predictions),
+            1 if candidate_split == wanted else 0,
+            -int(missing_predictions),
+        )
+        if best_payload is None or best_score is None or score > best_score:
+            best_score = score
+            best_payload = (
+                str(candidate_split),
+                meta_rows,
+                pred_by_id,
+                pred_by_signature,
+                fallback_index,
+                int(parse_count),
+                matched_items,
+                int(matched_predictions),
+                int(missing_predictions),
+                unmatched_prediction_ids,
+                str(match_mode),
+            )
+
+    if best_payload is None:
+        raise FileNotFoundError(f"No usable fixed16 meta rows found under {fixed16_root}")
+    return (*best_payload, split_probe)
+
+
 def clip_pred_lines_to_target_box(pred_lines: Sequence[Dict], target_box: Dict[str, int], boundary_tol_px: float) -> List[Dict]:
     rect = (
         float(target_box["x_min"]),
@@ -528,24 +624,30 @@ def main() -> None:
     output_root = Path(args.output_root).resolve()
     ensure_dir(output_root)
 
-    meta_path = fixed16_root / f"meta_{args.split}.jsonl"
-    if not meta_path.is_file():
-        raise FileNotFoundError(f"Missing fixed16 meta file: {meta_path}")
     if not predictions_path.is_file():
         raise FileNotFoundError(f"Missing predictions file: {predictions_path}")
 
     family_manifest = resolve_family_manifest_path(fixed16_root=fixed16_root, family_manifest_arg=str(args.family_manifest))
     manifest_rows = load_jsonl(family_manifest) if family_manifest is not None else []
     manifest_map = {str(row["family_id"]): row for row in manifest_rows if isinstance(row, dict) and str(row.get("family_id", "")).strip()}
-    meta_rows = load_jsonl(meta_path)
     prediction_rows = load_prediction_rows(predictions_path)
-    pred_by_id, pred_by_signature, fallback_index, parse_count = build_prediction_index(prediction_rows, meta_rows)
-    matched_items, matched_predictions, missing_predictions, unmatched_prediction_ids, match_mode = collect_prediction_targets(
-        meta_rows=meta_rows,
+    (
+        resolved_split,
+        meta_rows,
+        pred_by_id,
+        pred_by_signature,
+        fallback_index,
+        parse_count,
+        matched_items,
+        matched_predictions,
+        missing_predictions,
+        unmatched_prediction_ids,
+        match_mode,
+        split_probe,
+    ) = choose_best_meta_split(
+        fixed16_root=fixed16_root,
+        requested_split=str(args.split),
         prediction_rows=prediction_rows,
-        pred_by_id=pred_by_id,
-        pred_by_signature=pred_by_signature,
-        fallback_index=fallback_index,
     )
 
     grouped_global_lines: Dict[str, List[Dict]] = defaultdict(list)
@@ -624,7 +726,8 @@ def main() -> None:
                 "fixed16_root": str(fixed16_root),
                 "predictions_path": str(predictions_path),
                 "family_manifest": "" if family_manifest is None else str(family_manifest),
-                "split": str(args.split),
+                "requested_split": str(args.split),
+                "resolved_split": str(resolved_split),
                 "prediction_match_mode": str(match_mode),
                 "matched_predictions": int(matched_predictions),
                 "missing_predictions": int(missing_predictions),
@@ -633,6 +736,7 @@ def main() -> None:
                 "raw_piece_count": int(raw_piece_count),
                 "stitched_sample_count": int(len(summary)),
                 "skipped_missing_source_image": int(skipped_missing_source_image),
+                "split_probe": split_probe,
                 "samples": summary,
             },
             f,
