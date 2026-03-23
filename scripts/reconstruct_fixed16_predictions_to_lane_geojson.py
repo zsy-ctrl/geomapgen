@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
+from PIL import Image, ImageDraw
 from rasterio import open as rasterio_open
 
 from export_llamafactory_patch_only_from_raw_family_manifest import clip_polyline_to_rect, dedup_points, point_boundary_side
@@ -37,6 +38,15 @@ def build_feature_collection(features: List[Dict], crs_name: str, name: str) -> 
     }
 
 
+def build_pixel_feature_collection(features: List[Dict], name: str) -> Dict:
+    return {
+        "type": "FeatureCollection",
+        "name": str(name),
+        "properties": {"coord_system": "pixel_global"},
+        "features": features,
+    }
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Stitch fixed16 prediction outputs back into full Lane.geojson files."
@@ -46,6 +56,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-root", type=str, required=True, help="Where to write stitched GeoJSON outputs.")
     parser.add_argument("--split", type=str, default="val", choices=["train", "val", "auto"])
     parser.add_argument("--family-manifest", type=str, default="", help="Optional family_manifest.jsonl path. Defaults to fixed16_root/../family_manifest.jsonl")
+    parser.add_argument("--source-root", type=str, default="", help="Optional original split root. If provided, source image path is inferred as source_root/source_sample_id/source_image_relpath.")
+    parser.add_argument("--source-image-relpath", type=str, default="patch_tif/0.tif", help="Relative path to the original raster under each source sample directory.")
     parser.add_argument("--merge-endpoint-tol-px", type=float, default=2.0, help="Tolerance for merging cut-to-cut box fragments.")
     parser.add_argument("--source-sample-id", type=str, default="", help="Optional source sample filter.")
     parser.add_argument("--max-samples", type=int, default=0)
@@ -318,7 +330,22 @@ def meta_source_sample_id(meta: Dict, family: Optional[Dict]) -> str:
     return fallback
 
 
-def meta_source_image_path(meta: Dict, family: Optional[Dict]) -> Optional[Path]:
+def infer_source_image_path_from_root(meta: Dict, family: Optional[Dict], source_root: Optional[Path], source_image_relpath: str) -> Optional[Path]:
+    if source_root is None:
+        return None
+    sample_id = meta_source_sample_id(meta=meta, family=family)
+    if not sample_id:
+        return None
+    relpath = str(source_image_relpath or "").strip().replace("\\", "/")
+    if not relpath:
+        return None
+    path = (source_root / sample_id / Path(relpath)).resolve()
+    if path.is_file():
+        return path
+    return None
+
+
+def meta_source_image_path(meta: Dict, family: Optional[Dict], source_root: Optional[Path], source_image_relpath: str) -> Optional[Path]:
     direct = str(meta.get("source_image_path", "")).strip()
     if direct:
         path = Path(direct).resolve()
@@ -330,6 +357,14 @@ def meta_source_image_path(meta: Dict, family: Optional[Dict]) -> Optional[Path]
             path = Path(family_path).resolve()
             if path.is_file():
                 return path
+    inferred = infer_source_image_path_from_root(
+        meta=meta,
+        family=family,
+        source_root=source_root,
+        source_image_relpath=source_image_relpath,
+    )
+    if inferred is not None:
+        return inferred
     return None
 
 
@@ -617,11 +652,116 @@ def build_lane_features(lines: Sequence[Dict], transform) -> List[Dict]:
     return features
 
 
+def build_lane_pixel_features(lines: Sequence[Dict]) -> List[Dict]:
+    features: List[Dict] = []
+    for line in lines:
+        arr = np.asarray(line.get("points_global", []), dtype=np.float32)
+        if arr.ndim != 2 or arr.shape[0] < 2:
+            continue
+        features.append(
+            {
+                "type": "Feature",
+                "properties": {
+                    "category": "lane_line",
+                    "start_type": str(line.get("start_type", "start")),
+                    "end_type": str(line.get("end_type", "end")),
+                },
+                "geometry": {
+                    "type": "LineString",
+                    "coordinates": [[float(x), float(y)] for x, y in arr.tolist()],
+                },
+            }
+        )
+    return features
+
+
+def infer_canvas_size(meta_rows: Sequence[Dict]) -> Tuple[int, int]:
+    width = 0
+    height = 0
+    for meta in meta_rows:
+        image_size = meta.get("image_size", [])
+        if isinstance(image_size, (list, tuple)) and len(image_size) >= 2:
+            try:
+                width = max(width, int(image_size[0]))
+                height = max(height, int(image_size[1]))
+            except Exception:
+                pass
+        crop_box = dict(meta.get("crop_box", {}))
+        try:
+            width = max(width, int(crop_box.get("x_max", 0)))
+            height = max(height, int(crop_box.get("y_max", 0)))
+        except Exception:
+            pass
+    return max(1, width), max(1, height)
+
+
+def build_pixel_canvas(fixed16_root: Path, meta_rows: Sequence[Dict]) -> Image.Image:
+    width, height = infer_canvas_size(meta_rows)
+    canvas = Image.new("RGB", (int(width), int(height)), color=(0, 0, 0))
+    pasted_keys = set()
+    for meta in meta_rows:
+        image_rel = str(meta.get("image", "")).strip()
+        crop_box = dict(meta.get("crop_box", {}))
+        if not image_rel or not crop_box:
+            continue
+        dedup_key = (image_rel, int(crop_box.get("x_min", 0)), int(crop_box.get("y_min", 0)))
+        if dedup_key in pasted_keys:
+            continue
+        pasted_keys.add(dedup_key)
+        patch_path = (fixed16_root / image_rel).resolve()
+        if not patch_path.is_file():
+            continue
+        try:
+            with Image.open(patch_path) as patch_image:
+                patch_rgb = patch_image.convert("RGB")
+                canvas.paste(patch_rgb, (int(crop_box.get("x_min", 0)), int(crop_box.get("y_min", 0))))
+        except Exception:
+            continue
+    return canvas
+
+
+def draw_endpoint_marker(draw: ImageDraw.ImageDraw, point: np.ndarray, color: Tuple[int, int, int], radius: int = 3) -> None:
+    x = int(round(float(point[0])))
+    y = int(round(float(point[1])))
+    draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill=color)
+
+
+def draw_line_set(draw: ImageDraw.ImageDraw, lines: Sequence[Dict], color: Tuple[int, int, int], width: int) -> None:
+    for line in lines:
+        arr = np.asarray(line.get("points_global", []), dtype=np.float32)
+        if arr.ndim != 2 or arr.shape[0] < 2:
+            continue
+        points = [tuple(float(v) for v in point) for point in arr.tolist()]
+        draw.line(points, fill=color, width=width)
+        start_type = str(line.get("start_type", "start"))
+        end_type = str(line.get("end_type", "end"))
+        start_color = (0, 220, 90) if start_type == "start" else (255, 60, 60) if start_type == "cut" else (255, 215, 0)
+        end_color = (0, 220, 90) if end_type == "start" else (255, 60, 60) if end_type == "cut" else (255, 215, 0)
+        draw_endpoint_marker(draw, arr[0], start_color, radius=3)
+        draw_endpoint_marker(draw, arr[-1], end_color, radius=3)
+
+
+def save_pixel_overlay(
+    fixed16_root: Path,
+    meta_rows: Sequence[Dict],
+    raw_lines: Sequence[Dict],
+    merged_lines: Sequence[Dict],
+    out_path: Path,
+) -> None:
+    canvas = build_pixel_canvas(fixed16_root=fixed16_root, meta_rows=meta_rows)
+    draw = ImageDraw.Draw(canvas)
+    draw_line_set(draw, raw_lines, color=(90, 200, 255), width=2)
+    draw_line_set(draw, merged_lines, color=(255, 140, 0), width=4)
+    ensure_dir(out_path.parent)
+    canvas.save(out_path)
+
+
 def main() -> None:
     args = parse_args()
     fixed16_root = Path(args.fixed16_root).resolve()
     predictions_path = Path(args.predictions_path).resolve()
     output_root = Path(args.output_root).resolve()
+    source_root = Path(str(args.source_root).strip()).resolve() if str(args.source_root).strip() else None
     ensure_dir(output_root)
 
     if not predictions_path.is_file():
@@ -653,20 +793,27 @@ def main() -> None:
     grouped_global_lines: Dict[str, List[Dict]] = defaultdict(list)
     grouped_family: Dict[str, Optional[Dict]] = {}
     grouped_source_image_path: Dict[str, Path] = {}
+    grouped_meta_rows: Dict[str, List[Dict]] = defaultdict(list)
     raw_piece_count = 0
-    skipped_missing_source_image = 0
+    missing_source_image_rows = 0
 
     for meta, pred_lines in matched_items:
         family = manifest_map.get(str(meta.get("family_id")))
         source_sample_id = meta_source_sample_id(meta=meta, family=family)
         if str(args.source_sample_id).strip() and source_sample_id != str(args.source_sample_id).strip():
             continue
-        source_image_path = meta_source_image_path(meta=meta, family=family)
-        if source_image_path is None:
-            skipped_missing_source_image += 1
-            continue
+        source_image_path = meta_source_image_path(
+            meta=meta,
+            family=family,
+            source_root=source_root,
+            source_image_relpath=str(args.source_image_relpath),
+        )
         grouped_family[source_sample_id] = family
-        grouped_source_image_path[source_sample_id] = source_image_path
+        if source_image_path is not None:
+            grouped_source_image_path[source_sample_id] = source_image_path
+        else:
+            missing_source_image_rows += 1
+        grouped_meta_rows[source_sample_id].append(meta)
         clipped_local_lines = clip_pred_lines_to_target_box(
             pred_lines=pred_lines,
             target_box=dict(meta.get("target_box", {})),
@@ -687,35 +834,64 @@ def main() -> None:
     summary: List[Dict] = []
     for sample_id in sample_ids:
         family = grouped_family.get(sample_id)
-        source_image_path = grouped_source_image_path[sample_id]
-        with rasterio_open(source_image_path) as ds:
-            transform = ds.transform
-            crs_name = str(ds.crs) if ds.crs is not None else "urn:ogc:def:crs:OGC:1.3:CRS84"
-
+        source_image_path = grouped_source_image_path.get(sample_id)
+        sample_meta_rows = grouped_meta_rows.get(sample_id, [])
         raw_lines = grouped_global_lines[sample_id]
         merged_lines = merge_cut_connected_lines(raw_lines, tol_px=float(args.merge_endpoint_tol_px))
 
         sample_out = output_root / sample_id
         ensure_dir(sample_out)
-        raw_lane_geojson = build_feature_collection(build_lane_features(raw_lines, transform), crs_name=crs_name, name="Lane_raw")
-        merged_lane_geojson = build_feature_collection(build_lane_features(merged_lines, transform), crs_name=crs_name, name="Lane")
+        raw_lane_pixel_geojson = build_pixel_feature_collection(build_lane_pixel_features(raw_lines), name="Lane_raw_pixel")
+        merged_lane_pixel_geojson = build_pixel_feature_collection(build_lane_pixel_features(merged_lines), name="Lane_pixel")
 
-        raw_lane_path = sample_out / "Lane.raw.geojson"
-        lane_path = sample_out / "Lane.geojson"
-        with raw_lane_path.open("w", encoding="utf-8") as f:
-            json.dump(raw_lane_geojson, f, ensure_ascii=False, indent=2)
-        with lane_path.open("w", encoding="utf-8") as f:
-            json.dump(merged_lane_geojson, f, ensure_ascii=False, indent=2)
+        raw_lane_pixel_path = sample_out / "Lane.raw.pixel.geojson"
+        lane_pixel_path = sample_out / "Lane.pixel.geojson"
+        with raw_lane_pixel_path.open("w", encoding="utf-8") as f:
+            json.dump(raw_lane_pixel_geojson, f, ensure_ascii=False, indent=2)
+        with lane_pixel_path.open("w", encoding="utf-8") as f:
+            json.dump(merged_lane_pixel_geojson, f, ensure_ascii=False, indent=2)
+
+        overlay_pixel_path = sample_out / "overlay.pixel.png"
+        save_pixel_overlay(
+            fixed16_root=fixed16_root,
+            meta_rows=sample_meta_rows,
+            raw_lines=raw_lines,
+            merged_lines=merged_lines,
+            out_path=overlay_pixel_path,
+        )
+
+        lane_path = ""
+        raw_lane_path = ""
+        if source_image_path is not None:
+            with rasterio_open(source_image_path) as ds:
+                transform = ds.transform
+                crs_name = str(ds.crs) if ds.crs is not None else "urn:ogc:def:crs:OGC:1.3:CRS84"
+
+            raw_lane_geojson = build_feature_collection(build_lane_features(raw_lines, transform), crs_name=crs_name, name="Lane_raw")
+            merged_lane_geojson = build_feature_collection(build_lane_features(merged_lines, transform), crs_name=crs_name, name="Lane")
+
+            raw_lane_path_obj = sample_out / "Lane.raw.geojson"
+            lane_path_obj = sample_out / "Lane.geojson"
+            with raw_lane_path_obj.open("w", encoding="utf-8") as f:
+                json.dump(raw_lane_geojson, f, ensure_ascii=False, indent=2)
+            with lane_path_obj.open("w", encoding="utf-8") as f:
+                json.dump(merged_lane_geojson, f, ensure_ascii=False, indent=2)
+            raw_lane_path = str(raw_lane_path_obj)
+            lane_path = str(lane_path_obj)
 
         summary.append(
             {
                 "source_sample_id": sample_id,
-                "source_image_path": str(source_image_path),
+                "source_image_path": "" if source_image_path is None else str(source_image_path),
                 "family_id": "" if family is None else str(family.get("family_id", "")),
                 "raw_piece_count": len(raw_lines),
                 "merged_lane_count": len(merged_lines),
-                "lane_geojson_path": str(lane_path),
-                "raw_lane_geojson_path": str(raw_lane_path),
+                "lane_geojson_path": lane_path,
+                "raw_lane_geojson_path": raw_lane_path,
+                "lane_pixel_geojson_path": str(lane_pixel_path),
+                "raw_lane_pixel_geojson_path": str(raw_lane_pixel_path),
+                "overlay_pixel_path": str(overlay_pixel_path),
+                "pixel_only": bool(source_image_path is None),
             }
         )
 
@@ -726,6 +902,8 @@ def main() -> None:
                 "fixed16_root": str(fixed16_root),
                 "predictions_path": str(predictions_path),
                 "family_manifest": "" if family_manifest is None else str(family_manifest),
+                "source_root": "" if source_root is None else str(source_root),
+                "source_image_relpath": str(args.source_image_relpath),
                 "requested_split": str(args.split),
                 "resolved_split": str(resolved_split),
                 "prediction_match_mode": str(match_mode),
@@ -735,7 +913,8 @@ def main() -> None:
                 "parsed_prediction_rows": int(parse_count),
                 "raw_piece_count": int(raw_piece_count),
                 "stitched_sample_count": int(len(summary)),
-                "skipped_missing_source_image": int(skipped_missing_source_image),
+                "skipped_missing_source_image": 0,
+                "missing_source_image_rows": int(missing_source_image_rows),
                 "split_probe": split_probe,
                 "samples": summary,
             },
