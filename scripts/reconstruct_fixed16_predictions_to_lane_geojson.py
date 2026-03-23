@@ -78,6 +78,16 @@ def _normalize_image_key(value: str) -> str:
     return text
 
 
+def _split_agnostic_image_key(value: str) -> str:
+    text = _normalize_image_key(value)
+    if not text:
+        return ""
+    parts = [part for part in text.split("/") if part]
+    if len(parts) >= 3 and parts[0].lower() == "images":
+        return "/".join(parts[2:])
+    return text
+
+
 def _extract_first_image_path(row: Dict) -> str:
     images = row.get("images")
     if isinstance(images, list):
@@ -127,12 +137,44 @@ def build_meta_signature(meta: Dict) -> str:
     return ""
 
 
+def build_meta_signature_variants(meta: Dict) -> List[str]:
+    prompt_key = _normalize_match_text(str(meta.get("prompt_text", "")))
+    if not prompt_key:
+        return []
+    image_value = str(meta.get("image", ""))
+    variants: List[str] = []
+    exact = _normalize_image_key(image_value)
+    splitless = _split_agnostic_image_key(image_value)
+    for image_key in (exact, splitless):
+        if image_key:
+            signature = f"{image_key}|||{prompt_key}"
+            if signature not in variants:
+                variants.append(signature)
+    return variants
+
+
 def build_prediction_signature(row: Dict) -> str:
     image_key = _extract_first_image_path(row)
     prompt_key = _extract_user_prompt_text(row)
     if image_key and prompt_key:
         return f"{image_key}|||{prompt_key}"
     return ""
+
+
+def build_prediction_signature_variants(row: Dict) -> List[str]:
+    image_value = _extract_first_image_path(row)
+    prompt_key = _extract_user_prompt_text(row)
+    if not prompt_key:
+        return []
+    variants: List[str] = []
+    exact = _normalize_image_key(image_value)
+    splitless = _split_agnostic_image_key(image_value)
+    for image_key in (exact, splitless):
+        if image_key:
+            signature = f"{image_key}|||{prompt_key}"
+            if signature not in variants:
+                variants.append(signature)
+    return variants
 
 
 def _parse_prediction_text(text: str) -> List[Dict]:
@@ -210,9 +252,9 @@ def build_prediction_index(
         ).strip()
         if sample_id:
             by_id[sample_id] = pred_lines
-        signature = build_prediction_signature(row)
-        if signature:
-            by_signature[signature] = pred_lines
+        for signature in build_prediction_signature_variants(row):
+            if signature and signature not in by_signature:
+                by_signature[signature] = pred_lines
 
     fallback_index: Dict[str, int] = {}
     if len(by_id) < len(meta_rows) and len(prediction_rows) == len(meta_rows):
@@ -280,11 +322,15 @@ def collect_prediction_targets(
     if pred_by_signature:
         matched_signatures: List[str] = []
         for meta in meta_rows:
-            signature = build_meta_signature(meta)
-            if not signature or signature not in pred_by_signature:
+            chosen_signature = None
+            for signature in build_meta_signature_variants(meta):
+                if signature in pred_by_signature:
+                    chosen_signature = signature
+                    break
+            if chosen_signature is None:
                 continue
-            matched.append((meta, pred_by_signature[signature]))
-            matched_signatures.append(signature)
+            matched.append((meta, pred_by_signature[chosen_signature]))
+            matched_signatures.append(chosen_signature)
         unmatched_prediction_signatures = sorted(sig for sig in pred_by_signature.keys() if sig not in set(matched_signatures))
         return matched, len(matched), 0, unmatched_prediction_signatures, "by_image_and_prompt"
 
