@@ -13,12 +13,12 @@ from PIL import Image, ImageDraw
 
 
 DEFAULT_PROMPT_TEMPLATE = """<image>
-Please construct the road map from ({start_x},{start_y}) to ({end_x},{end_y}) in the satellite image.
+Please construct the road map in the satellite image.
 Only predict road segments inside the target box [{box_x_min},{box_y_min},{box_x_max},{box_y_max}].
 Keep all coordinates in the patch-local coordinate system."""
 
 DEFAULT_STATE_PROMPT_TEMPLATE = """<image>
-Please construct the road map from ({start_x},{start_y}) to ({end_x},{end_y}) in the satellite image.
+Please construct the road map in the satellite image.
 Only predict road segments inside the target box [{box_x_min},{box_y_min},{box_x_max},{box_y_max}].
 Keep all coordinates in the patch-local coordinate system.
 The previous state lines use the neighbor-local coordinate system of their own source_patch, not the current patch-local coordinate system.
@@ -615,10 +615,6 @@ def build_split(
             )
             sample_id = f"{source_id}_g{int(box['grid_row'])}{int(box['grid_col'])}"
             prompt_fields = {
-                "start_x": int(prompt_info["start_x"]),
-                "start_y": int(prompt_info["start_y"]),
-                "end_x": int(prompt_info["end_x"]),
-                "end_y": int(prompt_info["end_y"]),
                 "box_x_min": int(box["x_min"]),
                 "box_y_min": int(box["y_min"]),
                 "box_x_max": int(box["x_max"]),
@@ -686,10 +682,6 @@ def build_split(
                     (int(box["x_max"]) - int(box["x_min"]) + 1)
                     * (int(box["y_max"]) - int(box["y_min"]) + 1)
                 ),
-                "anchor_source": str(prompt_info["anchor_source"]),
-                "anchor_start_xy": [int(prompt_info["start_x"]), int(prompt_info["start_y"])],
-                "anchor_end_xy": [int(prompt_info["end_x"]), int(prompt_info["end_y"])],
-                "anchor_piece_points": prompt_info["anchor_piece_points"],
                 "num_state_lines": int(len(state_lines_full)),
                 "state_lines": state_lines_full,
                 "num_target_lines": len(target_lines),

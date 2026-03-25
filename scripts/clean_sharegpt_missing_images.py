@@ -31,6 +31,13 @@ def parse_args() -> argparse.Namespace:
         help="Copy kept images into the cleaned dataset. Default behavior is to copy kept images; this flag is accepted for clarity.",
     )
     parser.add_argument(
+        "--image-root-mode",
+        type=str,
+        default="copy",
+        choices=["copy", "symlink", "none"],
+        help="How to expose images under the cleaned dataset root.",
+    )
+    parser.add_argument(
         "--dropped-report-limit",
         type=int,
         default=200,
@@ -195,11 +202,48 @@ def copy_kept_images(input_root: Path, output_root: Path, image_paths: Iterable[
     }
 
 
+def materialize_images(
+    input_root: Path,
+    output_root: Path,
+    image_paths: Iterable[str],
+    image_root_mode: str,
+) -> Dict[str, object]:
+    src_root = input_root / "images"
+    dst_root = output_root / "images"
+    mode = str(image_root_mode).strip().lower() or "copy"
+    if mode == "none" or not src_root.exists():
+        return {
+            "image_root_mode": "none",
+            "copied_images": 0,
+            "skipped_missing_images": 0,
+        }
+    if mode == "symlink":
+        try:
+            dst_root.symlink_to(src_root, target_is_directory=True)
+            return {
+                "image_root_mode": "symlink",
+                "copied_images": 0,
+                "skipped_missing_images": 0,
+            }
+        except OSError:
+            copy_summary = copy_kept_images(input_root=input_root, output_root=output_root, image_paths=image_paths)
+            return {
+                "image_root_mode": "copy_fallback",
+                **copy_summary,
+            }
+    copy_summary = copy_kept_images(input_root=input_root, output_root=output_root, image_paths=image_paths)
+    return {
+        "image_root_mode": "copy",
+        **copy_summary,
+    }
+
+
 def clean_dataset_root(
     input_root: Path,
     output_root: Path,
     splits: Sequence[str],
     dropped_report_limit: int,
+    image_root_mode: str = "copy",
 ) -> Dict[str, object]:
     input_root = input_root.resolve()
     output_root = output_root.resolve()
@@ -239,10 +283,11 @@ def clean_dataset_root(
         }
         all_kept_images.update(kept_image_paths)
 
-    image_copy_summary = copy_kept_images(
+    image_copy_summary = materialize_images(
         input_root=input_root,
         output_root=output_root,
         image_paths=all_kept_images,
+        image_root_mode=str(image_root_mode),
     )
     dataset_info = rebuild_dataset_info(input_root=input_root, output_root=output_root, splits=splits)
     (output_root / "dataset_info.json").write_text(
@@ -279,6 +324,7 @@ def main() -> None:
         output_root=output_root,
         splits=splits,
         dropped_report_limit=int(args.dropped_report_limit),
+        image_root_mode=str(args.image_root_mode),
     )
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 

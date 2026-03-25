@@ -8,6 +8,7 @@ from build_geo_current_family_manifest import (
     DEFAULT_LANE_RELPATH,
     DEFAULT_MASK_RELPATH,
 )
+from clean_sharegpt_missing_images import clean_dataset_root
 from build_patch_only_fixed_grid_targetbox_dataset import build_fixed_grid_targetbox_dataset
 from export_llamafactory_both_from_geo_current_family_manifest import export_families_to_stage_datasets
 from geo_current_dataset_v1_common import (
@@ -28,6 +29,13 @@ def _build_split_roots(args: argparse.Namespace) -> dict:
     if str(args.val_root).strip():
         split_roots["val"] = Path(str(args.val_root).strip()).resolve()
     return split_roots
+
+
+def _cleaned_dataset_root(dataset_root: Path) -> Path:
+    dataset_root = Path(dataset_root).resolve()
+    if dataset_root.name == "dataset":
+        return dataset_root.with_name("dataset_cleaned")
+    return dataset_root.parent / f"{dataset_root.name}_cleaned"
 
 
 def parse_args() -> argparse.Namespace:
@@ -89,6 +97,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fixed16-image-root-mode", type=str, default="symlink", choices=["symlink", "copy", "none"])
     parser.add_argument("--fixed16-export-visualizations", action="store_true")
     parser.add_argument("--fixed16-max-visualizations-per-split", type=int, default=0)
+    parser.add_argument("--skip-final-sharegpt-clean", action="store_true")
+    parser.add_argument(
+        "--final-sharegpt-clean-image-root-mode",
+        type=str,
+        default="symlink",
+        choices=["symlink", "copy", "none"],
+    )
+    parser.add_argument("--final-sharegpt-clean-dropped-report-limit", type=int, default=200)
     return parser.parse_args()
 
 
@@ -235,6 +251,44 @@ def main() -> None:
             max_visualizations_per_split=int(args.fixed16_max_visualizations_per_split),
         )
 
+    final_clean_outputs = {}
+    if not bool(args.skip_final_sharegpt_clean):
+        clean_targets = {
+            "stage_a": {
+                "input_root": Path(export_result["stage_a_root"]).resolve(),
+                "output_root": _cleaned_dataset_root(Path(export_result["stage_a_root"])),
+            },
+            "stage_b": {
+                "input_root": Path(export_result["stage_b_root"]).resolve(),
+                "output_root": _cleaned_dataset_root(Path(export_result["stage_b_root"])),
+            },
+        }
+        if fixed16_stagea_summary is not None:
+            clean_targets["fixed16_stage_a"] = {
+                "input_root": fixed16_output_root.resolve(),
+                "output_root": _cleaned_dataset_root(fixed16_output_root),
+            }
+        if fixed16_stageb_summary is not None:
+            clean_targets["fixed16_stage_b"] = {
+                "input_root": fixed16_stageb_output_root.resolve(),
+                "output_root": _cleaned_dataset_root(fixed16_stageb_output_root),
+            }
+
+        for name, roots in clean_targets.items():
+            clean_summary = clean_dataset_root(
+                input_root=roots["input_root"],
+                output_root=roots["output_root"],
+                splits=[str(x) for x in args.splits],
+                dropped_report_limit=int(args.final_sharegpt_clean_dropped_report_limit),
+                image_root_mode=str(args.final_sharegpt_clean_image_root_mode),
+            )
+            final_clean_outputs[str(name)] = {
+                "input_root": str(roots["input_root"]),
+                "output_root": str(roots["output_root"]),
+                "cleanup_summary_path": str((Path(roots["output_root"]) / "cleanup_summary.json").resolve()),
+                "summary": clean_summary,
+            }
+
     summary = {
         "output_root": str(output_root),
         "manifest_path": str(manifest_path),
@@ -283,11 +337,17 @@ def main() -> None:
             "boundary_tol_px": float(args.fixed16_boundary_tol_px),
             "image_root_mode": str(args.fixed16_image_root_mode),
         },
+        "final_sharegpt_clean_config": {
+            "enabled": not bool(args.skip_final_sharegpt_clean),
+            "image_root_mode": str(args.final_sharegpt_clean_image_root_mode),
+            "dropped_report_limit": int(args.final_sharegpt_clean_dropped_report_limit),
+        },
         "stage_a_summary": export_result["stage_a_summary"],
         "stage_b_summary": export_result["stage_b_summary"],
         "empty_patch_filter": export_result["empty_patch_filter"],
         "fixed16_stage_a_summary": fixed16_stagea_summary,
         "fixed16_stage_b_summary": fixed16_stageb_summary,
+        "final_sharegpt_clean_outputs": final_clean_outputs,
     }
     with (output_root / "build_manifest_and_datasets.summary.json").open("w", encoding="utf-8") as f:
         json.dump(summary, f, ensure_ascii=False, indent=2)
@@ -316,6 +376,15 @@ def main() -> None:
             print(
                 f"[{split}] fixed16_stage_b_rows={fixed16_stageb_split.get('written_rows', 0)} "
                 f"fixed16_stage_b_empty_kept={fixed16_stageb_split.get('kept_empty', 0)}",
+                flush=True,
+            )
+    if final_clean_outputs:
+        for name, info in final_clean_outputs.items():
+            totals = info["summary"].get("totals", {})
+            print(
+                f"[clean] {name} -> {info['output_root']} "
+                f"kept_images={totals.get('kept_images', 0)} "
+                f"image_root_mode={totals.get('image_root_mode', 'unknown')}",
                 flush=True,
             )
     print(f"Saved all outputs under {output_root}", flush=True)
