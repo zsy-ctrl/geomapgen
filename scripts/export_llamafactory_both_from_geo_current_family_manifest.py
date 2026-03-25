@@ -23,7 +23,7 @@ from geo_current_dataset_v1_common import (
     family_global_lines,
     load_family_raster_and_mask,
     load_jsonl,
-    local_lines_to_uv,
+    serialize_state_lines_neighbor_local,
     write_jsonl,
 )
 
@@ -273,10 +273,10 @@ def export_families_to_stage_datasets(
                 state_truncate_prob=float(state_truncate_prob),
                 rng=sample_rng,
             )
-            state_lines_uv = local_lines_to_uv(state_lines, patch=patch)
+            state_lines_json = serialize_state_lines_neighbor_local(state_lines, default_patch=patch)
             stageb_row = build_state_record(
                 image_rel_path=image_rel.as_posix(),
-                state_lines=state_lines_uv,
+                state_lines=state_lines_json,
                 target_lines=target_lines,
                 sample_id=sample_id,
                 system_prompt=stageb_system_prompt,
@@ -300,9 +300,10 @@ def export_families_to_stage_datasets(
                 "crop_box": patch["crop_box"],
                 "keep_box": patch["keep_box"],
                 "state_mode": str(state_mode),
+                "state_coord_system": "neighbor_local",
                 "num_state_lines": len(state_lines),
                 "num_target_lines": len(target_lines),
-                "state_lines": state_lines_uv,
+                "state_lines": state_lines_json,
                 "state_lines_float": state_lines,
                 "target_lines": target_lines,
                 "target_lines_quantized": target_lines_quantized,

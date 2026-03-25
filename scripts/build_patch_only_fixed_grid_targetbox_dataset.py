@@ -21,6 +21,7 @@ DEFAULT_STATE_PROMPT_TEMPLATE = """<image>
 Please construct the road map from ({start_x},{start_y}) to ({end_x},{end_y}) in the satellite image.
 Only predict road segments inside the target box [{box_x_min},{box_y_min},{box_x_max},{box_y_max}].
 Keep all coordinates in the patch-local coordinate system.
+The previous state lines use the neighbor-local coordinate system of their own source_patch, not the current patch-local coordinate system.
 Previous state:
 {state_json}"""
 
@@ -224,20 +225,8 @@ def canonicalize_line_direction(
     end_type: str,
 ) -> Tuple[np.ndarray, str, str]:
     pts = np.asarray(points_xy, dtype=np.float32)
-    if pts.ndim != 2 or pts.shape[0] < 2:
-        return pts, start_type, end_type
-    start_is_cut = str(start_type) == "cut"
-    end_is_cut = str(end_type) == "cut"
-    reverse = False
-    if start_is_cut and not end_is_cut:
-        reverse = False
-    elif end_is_cut and not start_is_cut:
-        reverse = True
-    elif point_origin_sort_key(pts[-1]) < point_origin_sort_key(pts[0]):
-        reverse = True
-    if not reverse:
-        return pts, start_type, end_type
-    return pts[::-1].copy(), end_type, start_type
+    # 保留原始点序：fixed16 再加工也不再把 cut 端强制放到前面。
+    return pts, start_type, end_type
 
 
 def sort_lines(lines: List[Dict]) -> List[Dict]:
@@ -677,8 +666,9 @@ def build_split(
                 "target_mode": "fixed_grid_target_box_map",
                 "coord_system": src_meta.get("coord_system", "patch_local_896"),
                 "source_dataset_type": "state" if source_has_state else "patch_only",
+                "state_coord_system": src_meta.get("state_coord_system", "neighbor_local"),
                 "serialization_mode": src_meta.get("serialization_mode", "paper_structured"),
-                "line_direction_mode": src_meta.get("line_direction_mode", "canonical_cut_then_origin"),
+                "line_direction_mode": src_meta.get("line_direction_mode", "preserve_original_order"),
                 "line_sort_mode": src_meta.get("line_sort_mode", "first_point_distance_to_patch_origin"),
                 "resample_mode": "equal_distance" if resample_step_px > 0 else "inherit_source_spacing",
                 "resample_step_px": float(resample_step_px),

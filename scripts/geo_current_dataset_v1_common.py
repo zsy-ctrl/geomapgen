@@ -45,6 +45,8 @@ DEFAULT_STAGEA_SYSTEM_PROMPT = (
 DEFAULT_STAGEB_PROMPT_TEMPLATE = """<image>
 Please construct the road-structure line map in the current patch.
 The previous state contains cut traces passed from already processed neighboring patches.
+Each state line uses the neighbor-local coordinate system of its own source_patch, not the current patch-local coordinate system.
+Use source_patch/source_boundary_side metadata to interpret how each trace connects into the current patch.
 Continue those traces when appropriate and also predict all owned line segments for the current patch.
 Previous state:
 {state_json}"""
@@ -52,6 +54,8 @@ DEFAULT_STAGEB_SYSTEM_PROMPT = (
     "You are a road-structure reconstruction assistant for satellite-image patches.\n"
     "Use the image and the previous line-map state to predict the current patch.\n"
     "The previous state contains cut traces from already processed neighboring patches.\n"
+    "Each state line is expressed in the neighbor-local coordinate system of its own source_patch neighbor.\n"
+    "Use the source_patch/source_boundary_side metadata to understand how those traces connect into the current patch.\n"
     "Preserve cross-patch continuity whenever those traces enter the current patch.\n"
     "The output JSON schema is {\"lines\": [...]}.\n"
     "Each line must stay in patch-local UV coordinates.\n"
@@ -1913,6 +1917,84 @@ def build_full_segments_for_patch(
     )
 
 
+def _opposite_boundary_side(side: str) -> str:
+    mapping = {"left": "right", "right": "left", "top": "bottom", "bottom": "top"}
+    return str(mapping.get(str(side), str(side)))
+
+
+def _state_line_coord_size(
+    line: Dict,
+    fallback_width: float,
+    fallback_height: float,
+) -> Tuple[float, float]:
+    size = line.get("coord_patch_size", [])
+    if isinstance(size, (list, tuple)) and len(size) >= 2:
+        try:
+            width = max(0.0, float(size[0]))
+            height = max(0.0, float(size[1]))
+            if width > 0.0 or height > 0.0:
+                return width, height
+        except Exception:
+            pass
+    return max(0.0, float(fallback_width)), max(0.0, float(fallback_height))
+
+
+def _copy_state_line_with_points(
+    line: Dict,
+    points_xy: np.ndarray,
+    cut_point_index: Optional[int] = None,
+) -> Dict:
+    arr = dedup_points(np.asarray(points_xy, dtype=np.float32))
+    copied = dict(line)
+    copied["points"] = [[float(x), float(y)] for x, y in arr.tolist()]
+    if cut_point_index is None:
+        cut_point_index = int(line.get("cut_point_index", 0))
+    cut_idx = int(np.clip(int(cut_point_index), 0, max(0, arr.shape[0] - 1)))
+    copied["cut_point_index"] = cut_idx
+    copied["cut_endpoint"] = "start" if cut_idx <= 0 else "end"
+    copied["start_type"] = "cut" if copied["cut_endpoint"] == "start" else "start"
+    copied["end_type"] = "cut" if copied["cut_endpoint"] == "end" else "end"
+    copied["coord_system"] = "neighbor_local"
+    return copied
+
+
+def serialize_state_lines_neighbor_local(
+    lines: Sequence[Dict],
+    default_patch: Optional[Dict] = None,
+) -> List[Dict]:
+    fallback_width = 0.0
+    fallback_height = 0.0
+    if default_patch is not None:
+        fallback_width, fallback_height = patch_local_size(default_patch)
+    out: List[Dict] = []
+    for line in lines:
+        arr = np.asarray(line.get("points", []), dtype=np.float32)
+        if arr.ndim != 2 or arr.shape[0] < 2 or arr.shape[1] != 2:
+            continue
+        width, height = _state_line_coord_size(
+            line=line,
+            fallback_width=fallback_width,
+            fallback_height=fallback_height,
+        )
+        if width > 0.0 or height > 0.0:
+            arr = clamp_points_float_rect(arr, patch_width=width, patch_height=height)
+        arr = dedup_points(np.rint(arr).astype(np.float32))
+        if arr.ndim != 2 or arr.shape[0] < 2:
+            continue
+        copied = dict(line)
+        copied["points"] = [[int(round(x)), int(round(y))] for x, y in arr.tolist()]
+        copied["coord_system"] = "neighbor_local"
+        if width > 0.0 or height > 0.0:
+            copied["coord_patch_size"] = [int(round(width)), int(round(height))]
+        if "cut_point_index" in copied:
+            copied["cut_point_index"] = int(
+                np.clip(int(copied.get("cut_point_index", 0)), 0, max(0, len(copied["points"]) - 1))
+            )
+            copied["cut_endpoint"] = "start" if int(copied["cut_point_index"]) <= 0 else "end"
+        out.append(copied)
+    return sort_lines(out)
+
+
 def extract_state_lines(
     patch: Dict,
     family: Dict,
@@ -1925,22 +2007,7 @@ def extract_state_lines(
     patch_map = {(int(item["row"]), int(item["col"])): item for item in patches}
     row = int(patch["row"])
     col = int(patch["col"])
-    crop_box = patch["crop_box"]
-    keep_box = patch["keep_box"]
-    crop_rect_global = (
-        float(crop_box["x_min"]),
-        float(crop_box["y_min"]),
-        float(crop_box["x_max"]),
-        float(crop_box["y_max"]),
-    )
-    local_rect = (
-        float(keep_box["x_min"] - crop_box["x_min"]),
-        float(keep_box["y_min"] - crop_box["y_min"]),
-        float(keep_box["x_max"] - crop_box["x_min"]),
-        float(keep_box["y_max"] - crop_box["y_min"]),
-    )
-    patch_size = int(crop_box["x_max"] - crop_box["x_min"])
-    offset = np.asarray([crop_box["x_min"], crop_box["y_min"]], dtype=np.float32)[None, :]
+    trace_len = max(2, int(trace_points))
     neighbors = []
     if (row, col - 1) in patch_map:
         neighbors.append((patch_map[(row, col - 1)], "left"))
@@ -1948,39 +2015,68 @@ def extract_state_lines(
         neighbors.append((patch_map[(row - 1, col)], "top"))
     out: List[Dict] = []
     for neighbor_patch, handoff_side in neighbors:
+        neighbor_crop_box = neighbor_patch["crop_box"]
+        neighbor_keep_box = neighbor_patch["keep_box"]
+        neighbor_offset = np.asarray(
+            [neighbor_crop_box["x_min"], neighbor_crop_box["y_min"]],
+            dtype=np.float32,
+        )[None, :]
+        neighbor_keep_rect = (
+            float(neighbor_keep_box["x_min"] - neighbor_crop_box["x_min"]),
+            float(neighbor_keep_box["y_min"] - neighbor_crop_box["y_min"]),
+            float(neighbor_keep_box["x_max"] - neighbor_crop_box["x_min"]),
+            float(neighbor_keep_box["y_max"] - neighbor_crop_box["y_min"]),
+        )
+        neighbor_width, neighbor_height = patch_local_size(neighbor_patch)
+        neighbor_boundary_side = _opposite_boundary_side(str(handoff_side))
         for segment in owned_segments_by_patch.get(int(neighbor_patch["patch_id"]), []):
             if str(segment.get("geometry_type", "line")) != "line":
                 continue
-            for piece in clip_polyline_to_rect(np.asarray(segment["points_global"], dtype=np.float32), crop_rect_global):
-                local = np.asarray(piece, dtype=np.float32) - offset
-                if local.ndim != 2 or local.shape[0] < 2:
-                    continue
-                local = clamp_points_float(local, patch_size=patch_size)
-                boundary_idx = None
-                if point_boundary_side(local[0], local_rect, boundary_tol_px) == handoff_side:
-                    boundary_idx = 0
-                elif point_boundary_side(local[-1], local_rect, boundary_tol_px) == handoff_side:
-                    boundary_idx = -1
-                if boundary_idx is None:
-                    continue
-                if boundary_idx == -1:
-                    local = local[::-1].copy()
-                trace = local[: max(2, int(trace_points))]
-                if trace.ndim != 2 or trace.shape[0] < 2:
-                    continue
-                out.append(
-                    {
-                        "source_patch": int(neighbor_patch["patch_id"]),
-                        "category": str(segment["category"]),
-                        "start_type": "cut",
-                        "end_type": "cut",
-                        "points": [[float(x), float(y)] for x, y in trace.tolist()],
-                    }
-                )
+            local = np.asarray(segment["points_global"], dtype=np.float32) - neighbor_offset
+            if local.ndim != 2 or local.shape[0] < 2:
+                continue
+            local = clamp_points_float_rect(local, patch_width=neighbor_width, patch_height=neighbor_height)
+            boundary_idx = None
+            if point_boundary_side(local[0], neighbor_keep_rect, boundary_tol_px) == neighbor_boundary_side:
+                boundary_idx = 0
+            elif point_boundary_side(local[-1], neighbor_keep_rect, boundary_tol_px) == neighbor_boundary_side:
+                boundary_idx = -1
+            if boundary_idx is None:
+                continue
+            if boundary_idx == 0:
+                trace = local[:trace_len].copy()
+                cut_point_index = 0
+            else:
+                trace = local[max(0, local.shape[0] - trace_len) :].copy()
+                cut_point_index = int(max(0, trace.shape[0] - 1))
+            if trace.ndim != 2 or trace.shape[0] < 2:
+                continue
+            out.append(
+                {
+                    "source_patch": int(neighbor_patch["patch_id"]),
+                    "source_patch_row": int(neighbor_patch["row"]),
+                    "source_patch_col": int(neighbor_patch["col"]),
+                    "source_boundary_side": str(neighbor_boundary_side),
+                    "target_boundary_side": str(handoff_side),
+                    "coord_system": "neighbor_local",
+                    "coord_patch_size": [int(round(neighbor_width)), int(round(neighbor_height))],
+                    "cut_point_index": int(cut_point_index),
+                    "cut_endpoint": "start" if int(cut_point_index) <= 0 else "end",
+                    "category": str(segment["category"]),
+                    "geometry_type": "line",
+                    "start_type": "cut" if int(cut_point_index) <= 0 else "start",
+                    "end_type": "cut" if int(cut_point_index) > 0 else "end",
+                    "points": [[float(x), float(y)] for x, y in trace.tolist()],
+                }
+            )
     seen = set()
     deduped: List[Dict] = []
     for line in sort_lines(out):
-        key = (int(line["source_patch"]), tuple((round(float(p[0]), 3), round(float(p[1]), 3)) for p in line["points"]))
+        key = (
+            int(line["source_patch"]),
+            str(line.get("source_boundary_side", "")),
+            tuple((round(float(p[0]), 3), round(float(p[1]), 3)) for p in line["points"]),
+        )
         if key in seen:
             continue
         seen.add(key)
@@ -2126,7 +2222,13 @@ def apply_state_mode(
     if state_mode in {"empty", "no_state"}:
         return []
     if state_mode in {"full", "full_state"}:
-        return [dict(line) for line in raw_state_lines]
+        out: List[Dict] = []
+        for line in raw_state_lines:
+            arr = np.asarray(line.get("points", []), dtype=np.float32)
+            if arr.ndim != 2 or arr.shape[0] < 2:
+                continue
+            out.append(_copy_state_line_with_points(line=line, points_xy=arr))
+        return sort_lines(out)
 
     weak_lines: List[Dict] = []
     keep_prob = 1.0 - max(0.0, min(1.0, float(state_line_dropout)))
@@ -2138,28 +2240,42 @@ def apply_state_mode(
         arr = np.asarray(line.get("points", []), dtype=np.float32)
         if arr.ndim != 2 or arr.shape[0] < 2:
             continue
+        coord_width, coord_height = _state_line_coord_size(
+            line=line,
+            fallback_width=float(patch_size),
+            fallback_height=float(patch_size),
+        )
+        cut_idx = int(np.clip(int(line.get("cut_point_index", 0)), 0, max(0, arr.shape[0] - 1)))
+        boundary_at_end = bool(cut_idx >= max(0, arr.shape[0] - 1))
         if float(rng.random()) < truncate_prob and arr.shape[0] > 2:
             new_len = int(rng.integers(2, min(arr.shape[0], max_trace_points) + 1))
         else:
             new_len = min(arr.shape[0], max_trace_points)
-        truncated = arr[:new_len].astype(np.float32)
+        if boundary_at_end:
+            truncated = arr[max(0, arr.shape[0] - new_len) :].astype(np.float32)
+            truncated_cut_idx = int(max(0, truncated.shape[0] - 1))
+        else:
+            truncated = arr[:new_len].astype(np.float32)
+            truncated_cut_idx = 0
         if float(state_point_jitter_px) > 0.0:
             noise = rng.uniform(
                 low=-float(state_point_jitter_px),
                 high=float(state_point_jitter_px),
                 size=truncated.shape,
             ).astype(np.float32)
-            truncated = clamp_points_float(truncated + noise, patch_size=int(patch_size))
+            truncated = clamp_points_float_rect(
+                truncated + noise,
+                patch_width=coord_width,
+                patch_height=coord_height,
+            )
         if truncated.ndim != 2 or truncated.shape[0] < 2:
             continue
         weak_lines.append(
-            {
-                "source_patch": int(line.get("source_patch", -1)),
-                "category": str(line.get("category", "road")),
-                "start_type": str(line.get("start_type", "cut")),
-                "end_type": str(line.get("end_type", "cut")),
-                "points": [[float(x), float(y)] for x, y in truncated.tolist()],
-            }
+            _copy_state_line_with_points(
+                line=line,
+                points_xy=truncated,
+                cut_point_index=int(truncated_cut_idx),
+            )
         )
     if weak_lines:
         return sort_lines(weak_lines)
@@ -2169,22 +2285,36 @@ def apply_state_mode(
     arr = np.asarray(first.get("points", []), dtype=np.float32)
     if arr.ndim != 2 or arr.shape[0] < 2:
         return []
-    fallback = arr[: max(2, int(weak_trace_points))].astype(np.float32)
+    coord_width, coord_height = _state_line_coord_size(
+        line=first,
+        fallback_width=float(patch_size),
+        fallback_height=float(patch_size),
+    )
+    cut_idx = int(np.clip(int(first.get("cut_point_index", 0)), 0, max(0, arr.shape[0] - 1)))
+    boundary_at_end = bool(cut_idx >= max(0, arr.shape[0] - 1))
+    if boundary_at_end:
+        fallback = arr[max(0, arr.shape[0] - max(2, int(weak_trace_points))) :].astype(np.float32)
+        fallback_cut_idx = int(max(0, fallback.shape[0] - 1))
+    else:
+        fallback = arr[: max(2, int(weak_trace_points))].astype(np.float32)
+        fallback_cut_idx = 0
     if float(state_point_jitter_px) > 0.0:
         noise = rng.uniform(
             low=-float(state_point_jitter_px),
             high=float(state_point_jitter_px),
             size=fallback.shape,
         ).astype(np.float32)
-        fallback = clamp_points_float(fallback + noise, patch_size=int(patch_size))
+        fallback = clamp_points_float_rect(
+            fallback + noise,
+            patch_width=coord_width,
+            patch_height=coord_height,
+        )
     if fallback.ndim != 2 or fallback.shape[0] < 2:
         return []
     return [
-        {
-            "source_patch": int(first.get("source_patch", -1)),
-            "category": str(first.get("category", "road")),
-            "start_type": str(first.get("start_type", "cut")),
-            "end_type": str(first.get("end_type", "cut")),
-            "points": [[float(x), float(y)] for x, y in fallback.tolist()],
-        }
+        _copy_state_line_with_points(
+            line=first,
+            points_xy=fallback,
+            cut_point_index=int(fallback_cut_idx),
+        )
     ]

@@ -24,11 +24,11 @@ from geo_current_dataset_v1_common import (
     ensure_dir,
     extract_state_lines,
     family_global_lines,
-    local_lines_to_uv,
     load_family_raster_and_mask,
     load_jsonl,
     local_lines_to_global,
     parse_generated_json,
+    serialize_state_lines_neighbor_local,
     sanitize_pred_lines_uv,
     uv_lines_to_local,
 )
@@ -226,6 +226,8 @@ def render_panel(
         if len(pts) >= 2:
             draw.line(pts, fill=line_color, width=3)
     for line in state_lines:
+        if str(line.get("coord_system", "")).strip().lower() == "neighbor_local":
+            continue
         pts = [tuple(int(v) for v in p) for p in line.get("points", [])]
         if len(pts) >= 2:
             draw.line(pts, fill=(255, 160, 40), width=4)
@@ -351,9 +353,9 @@ def main() -> None:
                 state_truncate_prob=float(args.state_truncate_prob),
                 rng=np.random.default_rng(seed=patch_id),
             )
-            state_lines_uv = local_lines_to_uv(state_lines, patch=patch)
+            state_lines_json = serialize_state_lines_neighbor_local(state_lines, default_patch=patch)
             prompt_text, system_text = build_prompt_and_system(
-                state_lines=state_lines_uv,
+                state_lines=state_lines_json,
                 use_patch_only_prompt_when_empty=bool(args.use_patch_only_prompt_when_empty),
             )
             image_ref = f"{family['family_id']}_p{patch_id:04d}.png"
@@ -399,7 +401,7 @@ def main() -> None:
             record = {
                 "patch_id": patch_id,
                 "prompt_text": prompt_text,
-                "state_lines": state_lines_uv,
+                "state_lines": state_lines_json,
                 "state_lines_float": state_lines,
                 "raw_state_lines": raw_state_lines,
                 "pred_text": pred_text,
@@ -415,8 +417,20 @@ def main() -> None:
             if bool(args.export_visualizations):
                 family_viz_dir = viz_dir / str(family["family_id"])
                 ensure_dir(family_viz_dir)
-                gt_panel = render_panel(patch_image, gt_lines, state_lines, f"{family['family_id']}_p{patch_id:04d} | GT", (40, 220, 255))
-                pred_panel = render_panel(patch_image, pred_lines, state_lines, f"{family['family_id']}_p{patch_id:04d} | Pred", (255, 80, 80))
+                gt_panel = render_panel(
+                    patch_image,
+                    gt_lines,
+                    state_lines_json,
+                    f"{family['family_id']}_p{patch_id:04d} | GT",
+                    (40, 220, 255),
+                )
+                pred_panel = render_panel(
+                    patch_image,
+                    pred_lines,
+                    state_lines_json,
+                    f"{family['family_id']}_p{patch_id:04d} | Pred",
+                    (255, 80, 80),
+                )
                 stack_panels(gt_panel, pred_panel).save(family_viz_dir / f"p{patch_id:04d}.png")
 
         family_summary = {

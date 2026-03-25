@@ -16,9 +16,9 @@ from geo_current_dataset_v1_common import (
     ensure_dir,
     extract_state_lines,
     family_global_lines,
-    local_lines_to_uv,
     load_family_raster_and_mask,
     load_jsonl,
+    serialize_state_lines_neighbor_local,
     write_jsonl,
 )
 from export_llamafactory_state_sft_from_raw_family_manifest import build_sample_rng, choose_state_mode
@@ -135,7 +135,7 @@ def export_split(
                 state_truncate_prob=float(state_truncate_prob),
                 rng=sample_rng,
             )
-            state_lines_uv = local_lines_to_uv(state_lines, patch=patch)
+            state_lines_json = serialize_state_lines_neighbor_local(state_lines, default_patch=patch)
             image_rel = Path("images") / split / str(family["family_id"]) / f"p{patch_id:04d}.png"
             out_image = output_root / image_rel
             ensure_dir(out_image.parent)
@@ -143,7 +143,7 @@ def export_split(
             rows.append(
                 build_state_record(
                     image_rel_path=image_rel.as_posix(),
-                    state_lines=state_lines_uv,
+                    state_lines=state_lines_json,
                     target_lines=target_lines,
                     sample_id=sample_id,
                     system_prompt=system_prompt,
@@ -168,9 +168,10 @@ def export_split(
                     "crop_box": patch["crop_box"],
                     "keep_box": patch["keep_box"],
                     "state_mode": str(state_mode),
+                    "state_coord_system": "neighbor_local",
                     "num_state_lines": len(state_lines),
                     "num_target_lines": len(target_lines),
-                    "state_lines": state_lines_uv,
+                    "state_lines": state_lines_json,
                     "state_lines_float": state_lines,
                     "target_lines": target_lines,
                     "target_lines_quantized": target_lines_quantized,

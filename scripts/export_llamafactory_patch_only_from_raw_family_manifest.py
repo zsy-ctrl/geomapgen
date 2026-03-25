@@ -249,21 +249,8 @@ def canonicalize_line_direction(
     end_type: str,
 ) -> Tuple[np.ndarray, str, str]:
     pts = np.asarray(points_xy, dtype=np.float32)
-    if pts.ndim != 2 or pts.shape[0] < 2:
-        return pts, start_type, end_type
-    start_is_cut = str(start_type) == "cut"
-    end_is_cut = str(end_type) == "cut"
-    reverse = False
-    if start_is_cut and not end_is_cut:
-        reverse = False
-    elif end_is_cut and not start_is_cut:
-        reverse = True
-    else:
-        if point_origin_sort_key(pts[-1]) < point_origin_sort_key(pts[0]):
-            reverse = True
-    if not reverse:
-        return pts, start_type, end_type
-    return pts[::-1].copy(), end_type, start_type
+    # 保留原始点序：cut/start/end 只作为标签，不再为了规范化反转线内点顺序。
+    return pts, start_type, end_type
 
 
 def sort_lines(lines: List[Dict]) -> List[Dict]:
